@@ -1,0 +1,14 @@
+{
+  "name": "remote-control-server",
+  "version": "1.0.0",
+  "description": "Fixed-token remote control server for Python clients",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
+

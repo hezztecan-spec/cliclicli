@@ -1,12 +1,10 @@
 services:
   - type: web
     name: client-status-server
-    env: node
+    runtime: node
     plan: free
+    rootDir: .
     buildCommand: npm install
     startCommand: npm start
-    envVars:
-      - key: TOKEN
-        sync: false
-      - key: CLIENT_TTL_MS
-        value: 120000
+    healthCheckPath: /health
+    autoDeployTrigger: commit

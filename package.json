@@ -1,14 +1,13 @@
 {
-  "name": "remote-control-server",
+  "name": "remote-control-system",
   "version": "1.0.0",
-  "description": "Fixed-token remote control server for Python clients",
-  "main": "index.js",
+  "private": true,
+  "workspaces": [
+    "server"
+  ],
   "scripts": {
-    "start": "node index.js",
-    "dev": "node index.js"
-  },
-  "dependencies": {
-    "express": "^4.21.2"
+    "start": "npm run start --workspace server",
+    "server": "npm run start --workspace server",
+    "client": "python3 client/client.py"
   }
 }
-

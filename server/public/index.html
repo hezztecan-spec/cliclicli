@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Remote Control Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Remote Control Server</p>
+          <h1>Панель управления клиентами</h1>
+          <p class="lead">
+            Веб-интерфейс для сервера на хостинге: просмотр клиентов, очереди команд и
+            последних отчетов.
+          </p>
+        </div>
+        <div class="token-card">
+          <label for="token">Token</label>
+          <input id="token" type="password" value="a9K2xP8mZ7QwL1vB" />
+          <button id="refresh-button" type="button">Обновить данные</button>
+          <p id="status" class="status">Ожидание загрузки...</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Добавить команду</h2>
+        </div>
+        <form id="command-form" class="command-form">
+          <label>
+            Client ID
+            <input id="client-id" name="client_id" type="text" placeholder="uuid клиента" required />
+          </label>
+          <label>
+            Команда
+            <textarea
+              id="command"
+              name="command"
+              rows="3"
+              placeholder="shell:whoami"
+              required
+            ></textarea>
+          </label>
+          <button type="submit">Отправить команду</button>
+        </form>
+        <p class="hint">Поддерживаются только `shell:`, `download:` и `update:`.</p>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Клиенты</h2>
+            <span id="clients-count" class="badge">0</span>
+          </div>
+          <div id="clients-list" class="list empty">Клиенты пока не зарегистрированы.</div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Последние отчеты</h2>
+          </div>
+          <div id="reports-list" class="list empty">Отчетов пока нет.</div>
+        </article>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+  </html>
+

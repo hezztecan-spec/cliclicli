@@ -1,3 +1,16 @@
 node_modules/
 .env
 npm-debug.log*
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.bak
+.DS_Store
+/server/data/
+/client/state/
+client.zip
+client/dist/
+client/build/
+client/.build-venv/
+client/.venv/
