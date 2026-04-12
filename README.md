@@ -44,6 +44,7 @@
 - `shell:<команда>`
 - `download:<url> [имя_файла]`
 - `update:<url>`
+- `restart`
 
 Примеры:
 
@@ -51,6 +52,7 @@
 shell:whoami
 download:https://example.com/file.txt report.txt
 update:https://example.com/client.py
+restart
 ```
 
 ## API сервера
@@ -137,14 +139,64 @@ client_id=<uuid>&token=a9K2xP8mZ7QwL1vB
 - последние отчеты
 - общее число клиентов
 
+### `POST /rename-client`
+
+Тело:
+
+```json
+{
+  "client_id": "uuid",
+  "token": "a9K2xP8mZ7QwL1vB",
+  "name": "Office-PC"
+}
+```
+
+### `POST /archive-client`
+
+Тело:
+
+```json
+{
+  "client_id": "uuid",
+  "token": "a9K2xP8mZ7QwL1vB",
+  "archived": true
+}
+```
+
+### `POST /restart-client`
+
+Тело:
+
+```json
+{
+  "client_id": "uuid",
+  "token": "a9K2xP8mZ7QwL1vB"
+}
+```
+
+### `POST /delete-client`
+
+Тело:
+
+```json
+{
+  "client_id": "uuid",
+  "token": "a9K2xP8mZ7QwL1vB"
+}
+```
+
 ## Логика сервера
 
 - На каждом защищенном endpoint проверяется `token`
 - Если токен неверный, сервер возвращает `401`
 - Клиенты и очереди команд сохраняются в `server/data/storage.json`
 - Все действия логируются в `server/logs/server.log`
-- Сервер принимает только команды с префиксами `shell:`, `download:` и `update:`
+- Сервер принимает только команды `restart`, `shell:`, `download:` и `update:`
 - Веб-интерфейс сервера доступен по корневому адресу `/`
+- В панели есть переименование клиентов, архив и быстрый `restart client`
+- Для каждого клиента рассчитывается статус `online/offline` по времени последнего контакта
+- В панели показывается `hostname`, `username`, `OS`, `IP`, версия клиента
+- Можно полностью удалить клиента вместе с его отчетами и очередью команд
 
 ## Запуск сервера
 
@@ -269,7 +321,7 @@ install_client.bat
 
 - создает `.venv`
 - ставит `requests`
-- создает задачу `RemoteControlClient` в `Task Scheduler`
+- создает задачу `rclient` в `Task Scheduler`
 - включает автозапуск при входе пользователя в Windows
 
 Для ручного запуска:
@@ -294,7 +346,7 @@ client\state\
 
 ## EXE для Windows
 
-Можно собрать один файл `RemoteControlClient.exe`, чтобы на клиентской машине не ставить Python вручную.
+Можно собрать один файл `rclient.exe`, чтобы на клиентской машине не ставить Python вручную.
 
 Сборку нужно делать именно на Windows, не на macOS.
 
@@ -304,7 +356,7 @@ client\state\
 
 - [.github/workflows/build-windows-client.yml](/Users/mansur/Documents/my derk/.github/workflows/build-windows-client.yml)
 
-Теперь можно собирать `RemoteControlClient.exe` вообще без своего Windows-ПК.
+Теперь можно собирать `rclient.exe` вообще без своего Windows-ПК.
 
 Как это работает:
 
@@ -326,7 +378,7 @@ git push origin v1.0.1
 4. GitHub Actions сам:
 
 - поднимет Windows runner
-- соберет `RemoteControlClient.exe`
+- соберет `rclient.exe`
 - прикрепит его к Release `v1.0.1`
 
 После этого новый `exe` можно скачать прямо из `GitHub Releases`.
@@ -343,16 +395,16 @@ build_exe.bat
 После этого появится файл:
 
 ```text
-client\dist\RemoteControlClient.exe
+client\dist\rclient.exe
 ```
 
 ### Установка EXE на клиенте
 
-Скопируй `RemoteControlClient.exe` на клиентский Windows-ПК и просто запусти его.
+Скопируй `rclient.exe` на клиентский Windows-ПК и просто запусти его.
 
 При обычном запуске EXE сам:
 
-- копирует себя в `%APPDATA%\RemoteControlClient\RemoteControlClient.exe`
+- копирует себя в `%APPDATA%\rclient\rclient.exe`
 - создает автозапуск в `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 - сразу запускает установленную копию
 - работает в фоне без консольного окна
@@ -360,12 +412,12 @@ client\dist\RemoteControlClient.exe
 Можно также явно запустить:
 
 ```bat
-RemoteControlClient.exe --install
+rclient.exe --install
 ```
 
 Что сделает EXE:
 
-- скопирует себя в `%APPDATA%\RemoteControlClient\RemoteControlClient.exe`
+- скопирует себя в `%APPDATA%\rclient\rclient.exe`
 - создаст автозапуск в реестре текущего пользователя Windows
 - сразу запустит установленную копию клиента
 - будет запускаться при входе пользователя в Windows
@@ -375,7 +427,7 @@ RemoteControlClient.exe --install
 Для удаления:
 
 ```bat
-RemoteControlClient.exe --uninstall
+rclient.exe --uninstall
 ```
 
 ## Как теперь работает обновление
@@ -394,12 +446,12 @@ https://github.com/hezztecan-spec/licilicl
 Чтобы обновление сработало:
 
 1. Подними версию в [client.py](/Users/mansur/Documents/my derk/client/client.py) в поле `APP_VERSION`
-2. Собери новый `RemoteControlClient.exe`
+2. Собери новый `rclient.exe`
 3. Загрузи его в `GitHub Release`
 4. Название файла должно быть ровно:
 
 ```text
-RemoteControlClient.exe
+rclient.exe
 ```
 
 5. Tag релиза должен быть больше текущей версии, например:
@@ -421,7 +473,7 @@ v1.0.1
 
 Поэтому один раз нужно:
 
-1. получить свежий `RemoteControlClient.exe` из нового GitHub Release
+1. получить свежий `rclient.exe` из нового GitHub Release
 2. запустить его на клиентском ПК вручную
 
 После этого дальше обновления уже должны идти автоматически через GitHub Releases.

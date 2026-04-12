@@ -10,16 +10,34 @@
     <main class="layout">
       <section class="hero">
         <div>
-          <p class="eyebrow">Remote Control Server</p>
+          <p class="eyebrow">rclient Control</p>
           <h1>Панель управления клиентами</h1>
           <p class="lead">
-            Веб-интерфейс для сервера на хостинге: просмотр клиентов, очереди команд и
-            последних отчетов.
+            Просмотр статусов, очередей, отчетов и управление карточками клиентов:
+            переименование, архив и быстрый перезапуск.
           </p>
         </div>
         <div class="token-card">
           <label for="token">Token</label>
           <input id="token" type="password" value="a9K2xP8mZ7QwL1vB" />
+          <div class="stats-grid">
+            <div class="stat-box">
+              <span>Всего</span>
+              <strong id="total-count">0</strong>
+            </div>
+            <div class="stat-box">
+              <span>Онлайн</span>
+              <strong id="online-count">0</strong>
+            </div>
+            <div class="stat-box">
+              <span>Активные</span>
+              <strong id="active-count">0</strong>
+            </div>
+            <div class="stat-box">
+              <span>Архив</span>
+              <strong id="archived-count">0</strong>
+            </div>
+          </div>
           <button id="refresh-button" type="button">Обновить данные</button>
           <p id="status" class="status">Ожидание загрузки...</p>
         </div>
@@ -46,16 +64,24 @@
           </label>
           <button type="submit">Отправить команду</button>
         </form>
-        <p class="hint">Поддерживаются только `shell:`, `download:` и `update:`.</p>
+        <p class="hint">Поддерживаются `restart`, `shell:`, `download:` и `update:`.</p>
       </section>
 
       <section class="grid">
         <article class="panel">
           <div class="panel-header">
-            <h2>Клиенты</h2>
+            <h2>Активные клиенты</h2>
             <span id="clients-count" class="badge">0</span>
           </div>
-          <div id="clients-list" class="list empty">Клиенты пока не зарегистрированы.</div>
+          <div id="clients-list" class="list empty">Активных клиентов пока нет.</div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Архив</h2>
+            <span id="archived-badge" class="badge">0</span>
+          </div>
+          <div id="archived-list" class="list empty">В архиве пока ничего нет.</div>
         </article>
 
         <article class="panel">
@@ -70,4 +96,3 @@
     <script src="/app.js"></script>
   </body>
   </html>
-

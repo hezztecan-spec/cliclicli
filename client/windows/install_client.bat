@@ -4,7 +4,7 @@ setlocal
 set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..") do set "CLIENT_DIR=%%~fI"
 set "VENV_DIR=%CLIENT_DIR%\.venv"
-set "TASK_NAME=RemoteControlClient"
+set "TASK_NAME=rclient"
 set "START_SCRIPT=%SCRIPT_DIR%start_client.bat"
 
 echo [1/4] Проверка Python...
@@ -52,4 +52,3 @@ echo.
 echo Автозапуск создан через Task Scheduler с именем:
 echo %TASK_NAME%
 endlocal
-

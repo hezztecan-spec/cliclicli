@@ -6,6 +6,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 const FIXED_TOKEN = "a9K2xP8mZ7QwL1vB";
+const ONLINE_THRESHOLD_MS = 30 * 1000;
 const DATA_DIR = path.join(__dirname, "data");
 const LOGS_DIR = path.join(__dirname, "logs");
 const STORAGE_PATH = path.join(DATA_DIR, "storage.json");
@@ -109,24 +110,73 @@ function requireTextField(fieldName) {
   };
 }
 
+function normalizeSystemInfo(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const normalized = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === "string") {
+      normalized[key] = entry.trim().slice(0, 300);
+    }
+  }
+
+  return normalized;
+}
+
 function isSupportedCommand(command) {
   return (
+    command === "restart" ||
     command.startsWith("shell:") ||
     command.startsWith("download:") ||
     command.startsWith("update:")
   );
 }
 
+function isClientOnline(client) {
+  if (!client?.last_seen_at) {
+    return false;
+  }
+
+  const lastSeenTimestamp = new Date(client.last_seen_at).getTime();
+  return Date.now() - lastSeenTimestamp <= ONLINE_THRESHOLD_MS;
+}
+
+function getClientDisplayName(client) {
+  return client.name || client.client_id;
+}
+
+function ensureClientDefaults(client) {
+  return {
+    ...client,
+    name: client.name || "",
+    archived: Boolean(client.archived),
+    system_info: normalizeSystemInfo(client.system_info) || {}
+  };
+}
+
+function queueCommandForClient(storage, clientId, command) {
+  storage.commands[clientId] = storage.commands[clientId] || [];
+  storage.commands[clientId].push({
+    command,
+    created_at: new Date().toISOString()
+  });
+}
+
 function buildDashboardData(storage) {
   const clients = Object.values(storage.clients)
     .map((client) => {
+      const normalizedClient = ensureClientDefaults(client);
       const queue = storage.commands[client.client_id] || [];
       const latestReport = [...storage.reports]
         .reverse()
-        .find((report) => report.client_id === client.client_id) || null;
+        .find((report) => report.client_id === normalizedClient.client_id) || null;
 
       return {
-        ...client,
+        ...normalizedClient,
+        display_name: getClientDisplayName(normalizedClient),
+        is_online: isClientOnline(normalizedClient),
         pending_commands: queue.length,
         queued_commands: queue,
         latest_report: latestReport
@@ -138,12 +188,32 @@ function buildDashboardData(storage) {
       return rightTime - leftTime;
     });
 
-  const reports = [...storage.reports].reverse().slice(0, 50);
+  const reports = [...storage.reports]
+    .reverse()
+    .slice(0, 50)
+    .map((report) => {
+      const client = ensureClientDefaults(storage.clients[report.client_id] || {
+        client_id: report.client_id
+      });
+
+      return {
+        ...report,
+        display_name: getClientDisplayName(client),
+        archived: Boolean(client.archived)
+      };
+    });
+
+  const activeClients = clients.filter((client) => !client.archived);
+  const archivedClients = clients.filter((client) => client.archived);
+  const onlineClients = clients.filter((client) => client.is_online);
 
   return {
     clients,
     reports,
-    total_clients: clients.length
+    total_clients: clients.length,
+    active_clients: activeClients.length,
+    archived_clients: archivedClients.length,
+    online_clients: onlineClients.length
   };
 }
 
@@ -158,6 +228,10 @@ app.get("/health", (_req, res) => {
       "GET /get-command",
       "POST /report",
       "POST /add-command",
+      "POST /rename-client",
+      "POST /archive-client",
+      "POST /restart-client",
+      "POST /delete-client",
       "GET /api/dashboard"
     ]
   });
@@ -174,8 +248,11 @@ app.post("/register", authMiddleware, requireClientId, (req, res) => {
 
   storage.clients[req.clientId] = {
     client_id: req.clientId,
+    name: existing.name || "",
+    archived: Boolean(existing.archived),
     registered_at: existing.registered_at || now,
-    last_seen_at: now
+    last_seen_at: now,
+    system_info: normalizeSystemInfo(req.body?.system_info) || existing.system_info || {}
   };
   storage.commands[req.clientId] = storage.commands[req.clientId] || [];
   writeStorage(storage);
@@ -272,6 +349,86 @@ app.post(
     return res.json({ success: true, queued: true });
   }
 );
+
+app.post("/rename-client", authMiddleware, requireClientId, requireTextField("name"), (req, res) => {
+  const storage = readStorage();
+  const client = storage.clients[req.clientId];
+
+  if (!client) {
+    return res.status(404).json({ error: "Client is not registered" });
+  }
+
+  client.name = req.name;
+  writeStorage(storage);
+
+  logAction("client_renamed", {
+    client_id: req.clientId,
+    name: req.name
+  });
+
+  return res.json({ success: true, name: req.name });
+});
+
+app.post("/archive-client", authMiddleware, requireClientId, (req, res) => {
+  const storage = readStorage();
+  const client = storage.clients[req.clientId];
+
+  if (!client) {
+    return res.status(404).json({ error: "Client is not registered" });
+  }
+
+  if (typeof req.body?.archived !== "boolean") {
+    return res.status(400).json({ error: "archived must be a boolean" });
+  }
+
+  client.archived = req.body.archived;
+  writeStorage(storage);
+
+  logAction("client_archive_changed", {
+    client_id: req.clientId,
+    archived: client.archived
+  });
+
+  return res.json({ success: true, archived: client.archived });
+});
+
+app.post("/restart-client", authMiddleware, requireClientId, (req, res) => {
+  const storage = readStorage();
+  const client = storage.clients[req.clientId];
+
+  if (!client) {
+    return res.status(404).json({ error: "Client is not registered" });
+  }
+
+  queueCommandForClient(storage, req.clientId, "restart");
+  writeStorage(storage);
+
+  logAction("client_restart_queued", {
+    client_id: req.clientId
+  });
+
+  return res.json({ success: true, queued: true });
+});
+
+app.post("/delete-client", authMiddleware, requireClientId, (req, res) => {
+  const storage = readStorage();
+  const client = storage.clients[req.clientId];
+
+  if (!client) {
+    return res.status(404).json({ error: "Client is not registered" });
+  }
+
+  delete storage.clients[req.clientId];
+  delete storage.commands[req.clientId];
+  storage.reports = storage.reports.filter((report) => report.client_id !== req.clientId);
+  writeStorage(storage);
+
+  logAction("client_deleted", {
+    client_id: req.clientId
+  });
+
+  return res.json({ success: true, deleted: true });
+});
 
 app.get("/api/dashboard", authMiddleware, (_req, res) => {
   const storage = readStorage();

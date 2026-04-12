@@ -27,7 +27,7 @@ if %errorlevel% neq 0 exit /b 1
 if %errorlevel% neq 0 exit /b 1
 
 cd /d "%CLIENT_DIR%"
-"%VENV_DIR%\Scripts\pyinstaller.exe" --noconfirm --clean --onefile --noconsole --name RemoteControlClient client.py
+"%VENV_DIR%\Scripts\pyinstaller.exe" --noconfirm --clean --onefile --noconsole --name rclient client.py
 if %errorlevel% neq 0 (
   echo Сборка EXE не удалась.
   exit /b 1
@@ -35,9 +35,9 @@ if %errorlevel% neq 0 (
 
 echo.
 echo EXE собран:
-echo %DIST_DIR%\RemoteControlClient.exe
+echo %DIST_DIR%\rclient.exe
 echo.
 echo Для установки на клиенте:
-echo %DIST_DIR%\RemoteControlClient.exe --install
+echo %DIST_DIR%\rclient.exe --install
 
 endlocal

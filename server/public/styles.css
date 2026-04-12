@@ -91,6 +91,31 @@ h1 {
   gap: 12px;
 }
 
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.stat-box {
+  padding: 12px;
+  border-radius: 16px;
+  background: #f7efe4;
+  border: 1px solid #ead8c4;
+}
+
+.stat-box span {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.stat-box strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 22px;
+}
+
 .panel-header,
 .card-header {
   display: flex;
@@ -116,6 +141,14 @@ h1 {
 
 .card {
   padding: 16px;
+}
+
+.card-online {
+  border-color: #b7d6b7;
+}
+
+.card-offline {
+  border-color: #dfc8b8;
 }
 
 .command-form {
@@ -162,6 +195,23 @@ button:hover {
   font-size: 14px;
 }
 
+.secondary-button {
+  background: #dfd0bf;
+  color: var(--text);
+}
+
+.secondary-button:hover {
+  background: #cfbba4;
+}
+
+.danger-button {
+  background: #a53a27;
+}
+
+.danger-button:hover {
+  background: #7d291a;
+}
+
 .status,
 .hint,
 .muted,
@@ -190,6 +240,71 @@ button:hover {
 
 .subsection {
   margin-top: 12px;
+}
+
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mono {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.status-pill.online {
+  background: #d8eed8;
+  color: #1f6a25;
+}
+
+.status-pill.offline {
+  background: #f1dfd4;
+  color: #9a4b2b;
+}
+
+.status-pill.archived {
+  background: #ebe1d6;
+  color: #6f5a4b;
+}
+
+.rename-form,
+.actions-row,
+.client-meta {
+  display: grid;
+  gap: 10px;
+}
+
+.actions-row {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 10px;
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+  margin-top: 8px;
+}
+
+.info-grid p {
+  margin: 0;
+}
+
+.info-grid span {
+  color: var(--muted);
+  font-weight: 600;
 }
 
 .queue-list {
@@ -225,5 +340,11 @@ pre {
   .layout {
     width: min(100% - 24px, 1180px);
     padding-top: 24px;
+  }
+
+  .stats-grid,
+  .actions-row,
+  .info-grid {
+    grid-template-columns: 1fr;
   }
 }
