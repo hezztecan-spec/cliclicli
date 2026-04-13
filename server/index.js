@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
@@ -6,6 +7,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 const FIXED_TOKEN = "a9K2xP8mZ7QwL1vB";
+const DASHBOARD_PASSWORD = "77057090A";
+const DASHBOARD_COOKIE_NAME = "dashboard_auth";
+const DASHBOARD_SESSION_VALUE = crypto.randomBytes(32).toString("hex");
 const ONLINE_THRESHOLD_MS = 30 * 1000;
 const DATA_DIR = path.join(__dirname, "data");
 const LOGS_DIR = path.join(__dirname, "logs");
@@ -14,7 +18,7 @@ const LOG_PATH = path.join(LOGS_DIR, "server.log");
 const PUBLIC_DIR = path.join(__dirname, "public");
 
 app.use(express.json({ limit: "1mb" }));
-app.use(express.static(PUBLIC_DIR));
+app.use(express.static(PUBLIC_DIR, { index: false }));
 
 function ensureDirectories() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -58,11 +62,66 @@ function getToken(req) {
   return req.body?.token;
 }
 
+function parseCookies(req) {
+  const cookies = {};
+  const cookieHeader = req.headers.cookie || "";
+
+  for (const item of cookieHeader.split(";")) {
+    const [name, ...rest] = item.trim().split("=");
+    if (!name) {
+      continue;
+    }
+
+    cookies[name] = decodeURIComponent(rest.join("="));
+  }
+
+  return cookies;
+}
+
+function isSecureRequest(req) {
+  return req.secure || req.get("x-forwarded-proto") === "https";
+}
+
+function hasDashboardAccess(req) {
+  return parseCookies(req)[DASHBOARD_COOKIE_NAME] === DASHBOARD_SESSION_VALUE;
+}
+
+function setDashboardCookie(res, req) {
+  const parts = [
+    `${DASHBOARD_COOKIE_NAME}=${encodeURIComponent(DASHBOARD_SESSION_VALUE)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax"
+  ];
+
+  if (isSecureRequest(req)) {
+    parts.push("Secure");
+  }
+
+  res.setHeader("Set-Cookie", parts.join("; "));
+}
+
+function clearDashboardCookie(res, req) {
+  const parts = [
+    `${DASHBOARD_COOKIE_NAME}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=0"
+  ];
+
+  if (isSecureRequest(req)) {
+    parts.push("Secure");
+  }
+
+  res.setHeader("Set-Cookie", parts.join("; "));
+}
+
 function normalizeClientId(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function authMiddleware(req, res, next) {
+function clientAuthMiddleware(req, res, next) {
   const token = getToken(req);
 
   if (token !== FIXED_TOKEN) {
@@ -71,6 +130,14 @@ function authMiddleware(req, res, next) {
       path: req.path,
       ip: req.ip
     });
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  return next();
+}
+
+function dashboardAuthMiddleware(req, res, next) {
+  if (!hasDashboardAccess(req)) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
@@ -232,16 +299,55 @@ app.get("/health", (_req, res) => {
       "POST /archive-client",
       "POST /restart-client",
       "POST /delete-client",
+      "POST /auth/login",
+      "POST /auth/logout",
       "GET /api/dashboard"
     ]
   });
 });
 
-app.get("/", (_req, res) => {
+app.get("/", (req, res) => {
+  if (hasDashboardAccess(req)) {
+    return res.redirect("/dashboard");
+  }
+
+  return res.redirect("/login");
+});
+
+app.get("/login", (req, res) => {
+  if (hasDashboardAccess(req)) {
+    return res.redirect("/dashboard");
+  }
+
+  return res.sendFile(path.join(PUBLIC_DIR, "login.html"));
+});
+
+app.get("/dashboard", (req, res) => {
+  if (!hasDashboardAccess(req)) {
+    return res.redirect("/login");
+  }
+
   res.sendFile(path.join(PUBLIC_DIR, "index.html"));
 });
 
-app.post("/register", authMiddleware, requireClientId, (req, res) => {
+app.post("/auth/login", requireTextField("password"), (req, res) => {
+  if (req.password !== DASHBOARD_PASSWORD) {
+    logAction("dashboard_login_failed", { ip: req.ip });
+    return res.status(401).json({ error: "Invalid password" });
+  }
+
+  setDashboardCookie(res, req);
+  logAction("dashboard_login_success", { ip: req.ip });
+  return res.json({ success: true });
+});
+
+app.post("/auth/logout", (req, res) => {
+  clearDashboardCookie(res, req);
+  logAction("dashboard_logout", { ip: req.ip });
+  return res.json({ success: true });
+});
+
+app.post("/register", clientAuthMiddleware, requireClientId, (req, res) => {
   const storage = readStorage();
   const now = new Date().toISOString();
   const existing = storage.clients[req.clientId] || {};
@@ -261,7 +367,7 @@ app.post("/register", authMiddleware, requireClientId, (req, res) => {
   res.json({ success: true, client_id: req.clientId });
 });
 
-app.get("/get-command", authMiddleware, requireClientId, (req, res) => {
+app.get("/get-command", clientAuthMiddleware, requireClientId, (req, res) => {
   const storage = readStorage();
   const client = storage.clients[req.clientId];
 
@@ -285,7 +391,7 @@ app.get("/get-command", authMiddleware, requireClientId, (req, res) => {
   });
 });
 
-app.post("/report", authMiddleware, requireClientId, requireTextField("result"), (req, res) => {
+app.post("/report", clientAuthMiddleware, requireClientId, requireTextField("result"), (req, res) => {
   const storage = readStorage();
   const client = storage.clients[req.clientId];
 
@@ -312,7 +418,7 @@ app.post("/report", authMiddleware, requireClientId, requireTextField("result"),
 
 app.post(
   "/add-command",
-  authMiddleware,
+  dashboardAuthMiddleware,
   requireClientId,
   requireTextField("command"),
   (req, res) => {
@@ -350,7 +456,7 @@ app.post(
   }
 );
 
-app.post("/rename-client", authMiddleware, requireClientId, requireTextField("name"), (req, res) => {
+app.post("/rename-client", dashboardAuthMiddleware, requireClientId, requireTextField("name"), (req, res) => {
   const storage = readStorage();
   const client = storage.clients[req.clientId];
 
@@ -369,7 +475,7 @@ app.post("/rename-client", authMiddleware, requireClientId, requireTextField("na
   return res.json({ success: true, name: req.name });
 });
 
-app.post("/archive-client", authMiddleware, requireClientId, (req, res) => {
+app.post("/archive-client", dashboardAuthMiddleware, requireClientId, (req, res) => {
   const storage = readStorage();
   const client = storage.clients[req.clientId];
 
@@ -392,7 +498,7 @@ app.post("/archive-client", authMiddleware, requireClientId, (req, res) => {
   return res.json({ success: true, archived: client.archived });
 });
 
-app.post("/restart-client", authMiddleware, requireClientId, (req, res) => {
+app.post("/restart-client", dashboardAuthMiddleware, requireClientId, (req, res) => {
   const storage = readStorage();
   const client = storage.clients[req.clientId];
 
@@ -410,7 +516,7 @@ app.post("/restart-client", authMiddleware, requireClientId, (req, res) => {
   return res.json({ success: true, queued: true });
 });
 
-app.post("/delete-client", authMiddleware, requireClientId, (req, res) => {
+app.post("/delete-client", dashboardAuthMiddleware, requireClientId, (req, res) => {
   const storage = readStorage();
   const client = storage.clients[req.clientId];
 
@@ -430,7 +536,7 @@ app.post("/delete-client", authMiddleware, requireClientId, (req, res) => {
   return res.json({ success: true, deleted: true });
 });
 
-app.get("/api/dashboard", authMiddleware, (_req, res) => {
+app.get("/api/dashboard", dashboardAuthMiddleware, (_req, res) => {
   const storage = readStorage();
   res.json(buildDashboardData(storage));
 });

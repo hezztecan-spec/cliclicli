@@ -1,8 +1,7 @@
-const DEFAULT_TOKEN = "a9K2xP8mZ7QwL1vB";
 const REFRESH_INTERVAL_MS = 5000;
 
-const tokenInput = document.getElementById("token");
 const refreshButton = document.getElementById("refresh-button");
+const logoutButton = document.getElementById("logout-button");
 const statusNode = document.getElementById("status");
 const clientsCountNode = document.getElementById("clients-count");
 const archivedBadgeNode = document.getElementById("archived-badge");
@@ -44,12 +43,6 @@ function formatDate(value) {
   return date.toLocaleString();
 }
 
-function readToken() {
-  const token = tokenInput.value.trim() || DEFAULT_TOKEN;
-  localStorage.setItem("dashboard_token", token);
-  return token;
-}
-
 async function postJson(url, payload) {
   const response = await fetch(url, {
     method: "POST",
@@ -68,11 +61,10 @@ async function postJson(url, payload) {
 }
 
 async function loadDashboard() {
-  const token = readToken();
   setStatus("Загрузка данных...");
 
   try {
-    const response = await fetch(`/api/dashboard?token=${encodeURIComponent(token)}`);
+    const response = await fetch("/api/dashboard");
     const payload = await response.json();
 
     if (!response.ok) {
@@ -83,6 +75,9 @@ async function loadDashboard() {
     setStatus(`Данные обновлены: ${new Date().toLocaleTimeString()}`);
   } catch (error) {
     setStatus(error.message, true);
+    if (error.message === "Unauthorized") {
+      window.location.href = "/login";
+    }
   }
 }
 
@@ -212,14 +207,10 @@ function renderClients(clients, container, emptyText) {
   container.querySelectorAll("[data-restart-client]").forEach((button) => {
     button.addEventListener("click", async () => {
       const clientId = button.dataset.restartClient || "";
-      const token = readToken();
 
       setStatus(`Перезапуск клиента ${clientId}...`);
       try {
-        await postJson("/restart-client", {
-          client_id: clientId,
-          token
-        });
+        await postJson("/restart-client", { client_id: clientId });
         setStatus(`Команда restart поставлена для ${clientId}.`);
         await loadDashboard();
       } catch (error) {
@@ -232,13 +223,11 @@ function renderClients(clients, container, emptyText) {
     button.addEventListener("click", async () => {
       const clientId = button.dataset.archiveClient || "";
       const archived = button.dataset.archivedState === "true";
-      const token = readToken();
 
       setStatus(`${archived ? "Возврат" : "Архивация"} клиента ${clientId}...`);
       try {
         await postJson("/archive-client", {
           client_id: clientId,
-          token,
           archived: !archived
         });
         setStatus(archived ? "Клиент возвращен из архива." : "Клиент отправлен в архив.");
@@ -252,7 +241,6 @@ function renderClients(clients, container, emptyText) {
   container.querySelectorAll("[data-delete-client]").forEach((button) => {
     button.addEventListener("click", async () => {
       const clientId = button.dataset.deleteClient || "";
-      const token = readToken();
 
       if (!window.confirm(`Удалить клиента ${clientId} со всеми отчетами и очередью команд?`)) {
         return;
@@ -260,10 +248,7 @@ function renderClients(clients, container, emptyText) {
 
       setStatus(`Удаление клиента ${clientId}...`);
       try {
-        await postJson("/delete-client", {
-          client_id: clientId,
-          token
-        });
+        await postJson("/delete-client", { client_id: clientId });
         setStatus("Клиент удален.");
         await loadDashboard();
       } catch (error) {
@@ -276,7 +261,6 @@ function renderClients(clients, container, emptyText) {
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const clientId = form.dataset.renameForm || "";
-      const token = readToken();
       const name = form.elements.name.value.trim();
 
       if (!name) {
@@ -288,7 +272,6 @@ function renderClients(clients, container, emptyText) {
       try {
         await postJson("/rename-client", {
           client_id: clientId,
-          token,
           name
         });
         setStatus("Имя клиента сохранено.");
@@ -328,7 +311,6 @@ function renderReports(reports) {
 
 async function submitCommand(event) {
   event.preventDefault();
-  const token = readToken();
   const clientId = clientIdInput.value.trim();
   const command = commandInput.value.trim();
 
@@ -342,7 +324,6 @@ async function submitCommand(event) {
   try {
     await postJson("/add-command", {
       client_id: clientId,
-      token,
       command
     });
     commandInput.value = "";
@@ -353,13 +334,17 @@ async function submitCommand(event) {
   }
 }
 
-function initialize() {
-  const savedToken = localStorage.getItem("dashboard_token");
-  if (savedToken) {
-    tokenInput.value = savedToken;
+async function logout() {
+  try {
+    await postJson("/auth/logout", {});
+  } finally {
+    window.location.href = "/login";
   }
+}
 
+function initialize() {
   refreshButton.addEventListener("click", loadDashboard);
+  logoutButton.addEventListener("click", logout);
   commandForm.addEventListener("submit", submitCommand);
 
   loadDashboard();
