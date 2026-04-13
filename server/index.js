@@ -47,13 +47,17 @@ ensureDirectories();
 
 app.use(express.json({ limit: "1mb" }));
 app.use((err, req, res, next) => {
-  if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
+  // Handle JSON parsing errors
+  if (err instanceof SyntaxError && "body" in err) {
     logAction("json_parse_error", {
       message: err.message,
-      ip: req.ip
+      ip: req.ip,
+      statusCode: err.status
     });
     return res.status(400).json({ error: "Invalid JSON in request body" });
   }
+  
+  // Pass other errors to the next handler
   next(err);
 });
 app.use(express.static(PUBLIC_DIR, { index: false }));
@@ -319,26 +323,14 @@ app.get("/health", (_req, res) => {
 });
 
 app.get("/", (req, res) => {
-  if (hasDashboardAccess(req)) {
-    return res.redirect("/dashboard");
-  }
-
-  return res.redirect("/login");
+  return res.redirect("/dashboard");
 });
 
 app.get("/login", (req, res) => {
-  if (hasDashboardAccess(req)) {
-    return res.redirect("/dashboard");
-  }
-
-  return res.sendFile(path.join(PUBLIC_DIR, "login.html"));
+  return res.redirect("/dashboard");
 });
 
 app.get("/dashboard", (req, res) => {
-  if (!hasDashboardAccess(req)) {
-    return res.redirect("/login");
-  }
-
   res.sendFile(path.join(PUBLIC_DIR, "index.html"));
 });
 
