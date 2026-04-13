@@ -31,9 +31,118 @@ function ensureDirectories() {
   }
 }
 
+function normalizeOptionalText(value, maxLength = 300) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  return value.trim().slice(0, maxLength);
+}
+
+function normalizeSystemInfo(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const normalized = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === "string") {
+      const cleanKey = normalizeOptionalText(key, 100);
+      const cleanValue = normalizeOptionalText(entry, 300);
+      if (cleanKey && cleanValue) {
+        normalized[cleanKey] = cleanValue;
+      }
+    }
+  }
+
+  return normalized;
+}
+
+function normalizeCommandEntry(entry) {
+  if (typeof entry === "string") {
+    const command = normalizeOptionalText(entry, 4096);
+    if (!command) {
+      return null;
+    }
+
+    return {
+      command_id: crypto.randomUUID(),
+      command,
+      created_at: new Date().toISOString(),
+      command_kind: "manual",
+      terminal_session_id: "",
+      terminal_type: "",
+      terminal_title: "",
+      display_command: ""
+    };
+  }
+
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    return null;
+  }
+
+  const command = normalizeOptionalText(entry.command, 4096);
+  if (!command) {
+    return null;
+  }
+
+  return {
+    command_id: normalizeOptionalText(entry.command_id, 120) || crypto.randomUUID(),
+    command,
+    created_at: normalizeOptionalText(entry.created_at, 120) || new Date().toISOString(),
+    command_kind: normalizeOptionalText(entry.command_kind, 40) || "manual",
+    terminal_session_id: normalizeOptionalText(entry.terminal_session_id, 120),
+    terminal_type: normalizeOptionalText(entry.terminal_type, 40),
+    terminal_title: normalizeOptionalText(entry.terminal_title, 120),
+    display_command: normalizeOptionalText(entry.display_command, 1000)
+  };
+}
+
+function normalizeReportEntry(entry) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    return null;
+  }
+
+  const clientId = normalizeOptionalText(entry.client_id, 120);
+  const result = normalizeOptionalText(entry.result, 10000);
+
+  if (!clientId || !result) {
+    return null;
+  }
+
+  return {
+    report_id: normalizeOptionalText(entry.report_id, 120) || crypto.randomUUID(),
+    client_id: clientId,
+    result,
+    received_at: normalizeOptionalText(entry.received_at, 120) || new Date().toISOString(),
+    command_id: normalizeOptionalText(entry.command_id, 120),
+    command_kind: normalizeOptionalText(entry.command_kind, 40),
+    terminal_session_id: normalizeOptionalText(entry.terminal_session_id, 120),
+    terminal_type: normalizeOptionalText(entry.terminal_type, 40),
+    terminal_title: normalizeOptionalText(entry.terminal_title, 120),
+    display_command: normalizeOptionalText(entry.display_command, 1000)
+  };
+}
+
 function readStorage() {
   ensureDirectories();
-  return JSON.parse(fs.readFileSync(STORAGE_PATH, "utf8"));
+  const rawStorage = JSON.parse(fs.readFileSync(STORAGE_PATH, "utf8"));
+  const clients = rawStorage.clients && typeof rawStorage.clients === "object" ? rawStorage.clients : {};
+  const commands = rawStorage.commands && typeof rawStorage.commands === "object" ? rawStorage.commands : {};
+  const reports = Array.isArray(rawStorage.reports) ? rawStorage.reports : [];
+
+  const normalizedCommands = Object.fromEntries(
+    Object.entries(commands).map(([clientId, queue]) => [
+      clientId,
+      Array.isArray(queue) ? queue.map(normalizeCommandEntry).filter(Boolean) : []
+    ])
+  );
+
+  return {
+    clients,
+    commands: normalizedCommands,
+    reports: reports.map(normalizeReportEntry).filter(Boolean)
+  };
 }
 
 function writeStorage(data) {
@@ -78,7 +187,7 @@ function clientAuthMiddleware(req, res, next) {
   return next();
 }
 
-function dashboardAuthMiddleware(req, res, next) {
+function dashboardAuthMiddleware(_req, _res, next) {
   return next();
 }
 
@@ -93,7 +202,7 @@ function requireClientId(req, res, next) {
   return next();
 }
 
-function requireTextField(fieldName) {
+function requireTextField(fieldName, maxLength = 4096) {
   return (req, res, next) => {
     const value = req.body?.[fieldName];
 
@@ -106,28 +215,13 @@ function requireTextField(fieldName) {
       return res.status(400).json({ error: `${fieldName} cannot be empty` });
     }
 
-    if (trimmed.length > 4096) {
+    if (trimmed.length > maxLength) {
       return res.status(400).json({ error: `${fieldName} is too long` });
     }
 
     req[fieldName] = trimmed;
     return next();
   };
-}
-
-function normalizeSystemInfo(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  const normalized = {};
-  for (const [key, entry] of Object.entries(value)) {
-    if (typeof entry === "string") {
-      normalized[key] = entry.trim().slice(0, 300);
-    }
-  }
-
-  return normalized;
 }
 
 function isSupportedCommand(command) {
@@ -161,12 +255,22 @@ function ensureClientDefaults(client) {
   };
 }
 
-function queueCommandForClient(storage, clientId, command) {
+function queueCommandForClient(storage, clientId, command, metadata = {}) {
   storage.commands[clientId] = storage.commands[clientId] || [];
-  storage.commands[clientId].push({
+
+  const commandEntry = normalizeCommandEntry({
+    command_id: metadata.command_id || crypto.randomUUID(),
     command,
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
+    command_kind: metadata.command_kind,
+    terminal_session_id: metadata.terminal_session_id,
+    terminal_type: metadata.terminal_type,
+    terminal_title: metadata.terminal_title,
+    display_command: metadata.display_command
   });
+
+  storage.commands[clientId].push(commandEntry);
+  return commandEntry;
 }
 
 function buildDashboardData(storage) {
@@ -237,18 +341,16 @@ app.get("/health", (_req, res) => {
       "POST /archive-client",
       "POST /restart-client",
       "POST /delete-client",
-      "POST /auth/login",
-      "POST /auth/logout",
       "GET /api/dashboard"
     ]
   });
 });
 
-app.get("/", (req, res) => {
+app.get("/", (_req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, "index.html"));
 });
 
-app.get("/dashboard", (req, res) => {
+app.get("/dashboard", (_req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, "index.html"));
 });
 
@@ -288,15 +390,23 @@ app.get("/get-command", clientAuthMiddleware, requireClientId, (req, res) => {
 
   logAction("command_requested", {
     client_id: req.clientId,
-    command_found: Boolean(commandEntry)
+    command_found: Boolean(commandEntry),
+    command_id: commandEntry?.command_id || ""
   });
 
   return res.json({
-    command: commandEntry ? commandEntry.command : null
+    command: commandEntry ? commandEntry.command : null,
+    command_id: commandEntry?.command_id || null,
+    command_kind: commandEntry?.command_kind || null,
+    terminal_session_id: commandEntry?.terminal_session_id || null,
+    terminal_type: commandEntry?.terminal_type || null,
+    terminal_title: commandEntry?.terminal_title || null,
+    display_command: commandEntry?.display_command || null,
+    created_at: commandEntry?.created_at || null
   });
 });
 
-app.post("/report", clientAuthMiddleware, requireClientId, requireTextField("result"), (req, res) => {
+app.post("/report", clientAuthMiddleware, requireClientId, requireTextField("result", 10000), (req, res) => {
   const storage = readStorage();
   const client = storage.clients[req.clientId];
 
@@ -306,26 +416,38 @@ app.post("/report", clientAuthMiddleware, requireClientId, requireTextField("res
   }
 
   client.last_seen_at = new Date().toISOString();
-  storage.reports.push({
+
+  const reportEntry = normalizeReportEntry({
+    report_id: crypto.randomUUID(),
     client_id: req.clientId,
     result: req.result,
-    received_at: new Date().toISOString()
+    received_at: new Date().toISOString(),
+    command_id: req.body?.command_id,
+    command_kind: req.body?.command_kind,
+    terminal_session_id: req.body?.terminal_session_id,
+    terminal_type: req.body?.terminal_type,
+    terminal_title: req.body?.terminal_title,
+    display_command: req.body?.display_command
   });
+
+  storage.reports.push(reportEntry);
   writeStorage(storage);
 
   logAction("report_received", {
     client_id: req.clientId,
+    report_id: reportEntry.report_id,
+    command_id: reportEntry.command_id,
     result_preview: req.result.slice(0, 120)
   });
 
-  return res.json({ success: true });
+  return res.json({ success: true, report_id: reportEntry.report_id });
 });
 
 app.post(
   "/add-command",
   dashboardAuthMiddleware,
   requireClientId,
-  requireTextField("command"),
+  requireTextField("command", 4096),
   (req, res) => {
     const storage = readStorage();
     const client = storage.clients[req.clientId];
@@ -345,23 +467,32 @@ app.post(
       });
     }
 
-    storage.commands[req.clientId] = storage.commands[req.clientId] || [];
-    storage.commands[req.clientId].push({
-      command: req.command,
-      created_at: new Date().toISOString()
+    const commandEntry = queueCommandForClient(storage, req.clientId, req.command, {
+      command_kind: normalizeOptionalText(req.body?.command_kind, 40) || "manual",
+      terminal_session_id: normalizeOptionalText(req.body?.terminal_session_id, 120),
+      terminal_type: normalizeOptionalText(req.body?.terminal_type, 40),
+      terminal_title: normalizeOptionalText(req.body?.terminal_title, 120),
+      display_command: normalizeOptionalText(req.body?.display_command, 1000)
     });
+
     writeStorage(storage);
 
     logAction("command_added", {
       client_id: req.clientId,
+      command_id: commandEntry.command_id,
+      command_kind: commandEntry.command_kind,
       command_preview: req.command.slice(0, 120)
     });
 
-    return res.json({ success: true, queued: true });
+    return res.json({
+      success: true,
+      queued: true,
+      command_id: commandEntry.command_id
+    });
   }
 );
 
-app.post("/rename-client", dashboardAuthMiddleware, requireClientId, requireTextField("name"), (req, res) => {
+app.post("/rename-client", dashboardAuthMiddleware, requireClientId, requireTextField("name", 120), (req, res) => {
   const storage = readStorage();
   const client = storage.clients[req.clientId];
 
@@ -411,7 +542,9 @@ app.post("/restart-client", dashboardAuthMiddleware, requireClientId, (req, res)
     return res.status(404).json({ error: "Client is not registered" });
   }
 
-  queueCommandForClient(storage, req.clientId, "restart");
+  queueCommandForClient(storage, req.clientId, "restart", {
+    command_kind: "manual"
+  });
   writeStorage(storage);
 
   logAction("client_restart_queued", {

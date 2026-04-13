@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import uuid
+import ctypes
 import getpass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -102,11 +103,137 @@ def get_local_ip_addresses():
     return addresses
 
 
+def format_bytes(value):
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = float(max(value, 0))
+    unit_index = 0
+
+    while size >= 1024 and unit_index < len(units) - 1:
+        size /= 1024
+        unit_index += 1
+
+    return f"{size:.2f} {units[unit_index]}"
+
+
+def get_cpu_name():
+    processor_name = (platform.processor() or "").strip()
+    if processor_name:
+        return processor_name
+
+    try:
+        if is_windows():
+            completed = subprocess.run(
+                ["wmic", "cpu", "get", "Name", "/value"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            for line in completed.stdout.splitlines():
+                if line.startswith("Name="):
+                    value = line.split("=", 1)[1].strip()
+                    if value:
+                        return value
+        elif sys.platform == "darwin":
+            completed = subprocess.run(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            value = completed.stdout.strip()
+            if value:
+                return value
+        elif Path("/proc/cpuinfo").exists():
+            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore").splitlines():
+                if ":" in line and line.lower().startswith("model name"):
+                    value = line.split(":", 1)[1].strip()
+                    if value:
+                        return value
+    except Exception:
+        logging.exception("Failed to detect CPU name")
+
+    return "unknown"
+
+
+def get_memory_snapshot():
+    try:
+        if is_windows():
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            memory_status = MEMORYSTATUSEX()
+            memory_status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory_status))
+            total = int(memory_status.ullTotalPhys)
+            available = int(memory_status.ullAvailPhys)
+        else:
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            total = int(os.sysconf("SC_PHYS_PAGES") * page_size)
+            available = int(os.sysconf("SC_AVPHYS_PAGES") * page_size)
+    except Exception:
+        logging.exception("Failed to read memory snapshot")
+        return None
+
+    used = max(total - available, 0)
+    percent = (used / total * 100) if total else 0
+    return {
+        "total": total,
+        "available": available,
+        "used": used,
+        "percent": percent,
+    }
+
+
+def get_disk_snapshot():
+    try:
+        root_path = Path.home().anchor or "/"
+        usage = shutil.disk_usage(root_path)
+    except Exception:
+        logging.exception("Failed to read disk snapshot")
+        return None
+
+    percent = (usage.used / usage.total * 100) if usage.total else 0
+    return {
+        "total": int(usage.total),
+        "used": int(usage.used),
+        "free": int(usage.free),
+        "percent": percent,
+    }
+
+
 def get_system_info():
+    memory = get_memory_snapshot()
+    disk = get_disk_snapshot()
+
     return {
         "hostname": socket.gethostname(),
         "username": getpass.getuser(),
         "os": platform.platform(),
+        "platform": platform.system(),
+        "platform_release": platform.release(),
+        "architecture": platform.machine() or "unknown",
+        "cpu_name": get_cpu_name(),
+        "cpu_logical_cores": str(os.cpu_count() or 0),
+        "ram_total": format_bytes(memory["total"]) if memory else "unknown",
+        "ram_available": format_bytes(memory["available"]) if memory else "unknown",
+        "ram_used": format_bytes(memory["used"]) if memory else "unknown",
+        "ram_usage_percent": f"{memory['percent']:.1f}%" if memory else "unknown",
+        "disk_total": format_bytes(disk["total"]) if disk else "unknown",
+        "disk_used": format_bytes(disk["used"]) if disk else "unknown",
+        "disk_free": format_bytes(disk["free"]) if disk else "unknown",
+        "disk_usage_percent": f"{disk['percent']:.1f}%" if disk else "unknown",
         "python_version": platform.python_version(),
         "client_version": APP_VERSION,
         "local_ips": ", ".join(get_local_ip_addresses()) or "unknown",
@@ -127,13 +254,28 @@ def register_client(client_id):
 
 
 def get_command(client_id):
-    return send_get("/get-command", {"client_id": client_id, "token": TOKEN}).get("command")
+    return send_get("/get-command", {"client_id": client_id, "token": TOKEN})
 
 
-def report_result(client_id, result):
+def report_result(client_id, result, command_payload=None):
     safe_result = result if len(result) <= 10000 else f"{result[:10000]}\n\n[truncated]"
     logging.info("Reporting result for client %s", client_id)
-    send_post("/report", {"client_id": client_id, "token": TOKEN, "result": safe_result})
+    payload = {"client_id": client_id, "token": TOKEN, "result": safe_result}
+
+    if isinstance(command_payload, dict):
+        for key in [
+            "command_id",
+            "command_kind",
+            "terminal_session_id",
+            "terminal_type",
+            "terminal_title",
+            "display_command",
+        ]:
+            value = command_payload.get(key)
+            if isinstance(value, str) and value.strip():
+                payload[key] = value.strip()
+
+    send_post("/report", payload)
 
 
 def execute_shell(command_text):
@@ -535,23 +677,26 @@ def run_client():
     next_update_check_at = 0
 
     while True:
+        command_payload = None
         try:
             if time.time() >= next_update_check_at:
                 next_update_check_at = time.time() + AUTO_UPDATE_CHECK_INTERVAL_SECONDS
                 check_for_auto_update()
 
-            command = get_command(client_id)
+            command_payload = get_command(client_id)
+            command = command_payload.get("command") if isinstance(command_payload, dict) else None
+
             if command:
                 logging.info("Received command: %s", command)
                 result = execute_command(command)
                 logging.info("Command completed")
-                report_result(client_id, result)
+                report_result(client_id, result, command_payload)
             else:
                 logging.info("No command available")
         except RestartRequested as event:
             logging.info("Restart requested: %s", event.message)
             try:
-                report_result(client_id, event.message)
+                report_result(client_id, event.message, command_payload)
             except Exception:
                 logging.exception("Failed to report restart event")
             return
@@ -561,7 +706,7 @@ def run_client():
         except Exception as error:
             logging.exception("Client loop failed: %s", error)
             try:
-                report_result(client_id, f"error={error}")
+                report_result(client_id, f"error={error}", command_payload)
             except Exception:
                 logging.exception("Failed to report error")
 

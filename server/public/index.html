@@ -13,12 +13,12 @@
           <p class="eyebrow">rclient Control</p>
           <h1>Панель управления клиентами</h1>
           <p class="lead">
-            Просмотр статусов, очередей, отчетов и управление карточками клиентов:
-            переименование, архив и быстрый перезапуск.
+            Слева список клиентов кнопками по имени, справа полные характеристики и
+            многосессионный терминал с ручным удалением вкладок.
           </p>
         </div>
         <div class="token-card">
-          <p class="secure-note">Панель управления клиентами.</p>
+          <p class="secure-note">Панель отслеживает текущих клиентов и их последние ответы.</p>
           <div class="stats-grid">
             <div class="stat-box">
               <span>Всего</span>
@@ -42,56 +42,38 @@
         </div>
       </section>
 
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Добавить команду</h2>
-        </div>
-        <form id="command-form" class="command-form">
-          <label>
-            Client ID
-            <input id="client-id" name="client_id" type="text" placeholder="uuid клиента" required />
-          </label>
-          <label>
-            Команда
-            <textarea
-              id="command"
-              name="command"
-              rows="3"
-              placeholder="shell:whoami"
-              required
-            ></textarea>
-          </label>
-          <button type="submit">Отправить команду</button>
-        </form>
-        <p class="hint">Поддерживаются `restart`, `shell:`, `download:` и `update:`.</p>
-      </section>
-
-      <section class="grid">
-        <article class="panel">
+      <section class="workspace-grid">
+        <aside class="panel sidebar-panel">
           <div class="panel-header">
-            <h2>Активные клиенты</h2>
+            <h2>Клиенты</h2>
             <span id="clients-count" class="badge">0</span>
           </div>
-          <div id="clients-list" class="list empty">Активных клиентов пока нет.</div>
-        </article>
+          <div id="clients-list" class="client-button-list empty">Активных клиентов пока нет.</div>
 
-        <article class="panel">
+          <div class="sidebar-divider"></div>
+
           <div class="panel-header">
             <h2>Архив</h2>
             <span id="archived-badge" class="badge">0</span>
           </div>
-          <div id="archived-list" class="list empty">В архиве пока ничего нет.</div>
-        </article>
+          <div id="archived-list" class="client-button-list empty">В архиве пока ничего нет.</div>
+        </aside>
 
-        <article class="panel">
-          <div class="panel-header">
-            <h2>Последние отчеты</h2>
+        <section class="panel detail-panel">
+          <div id="client-details" class="client-details-empty">
+            Выберите клиента в списке слева, чтобы открыть характеристики и терминал.
           </div>
-          <div id="reports-list" class="list empty">Отчетов пока нет.</div>
-        </article>
+        </section>
+      </section>
+
+      <section class="panel reports-panel">
+        <div class="panel-header">
+          <h2>Последние отчеты</h2>
+        </div>
+        <div id="reports-list" class="list empty">Отчетов пока нет.</div>
       </section>
     </main>
 
     <script src="/app.js"></script>
   </body>
-  </html>
+</html>
