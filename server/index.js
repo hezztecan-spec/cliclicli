@@ -17,9 +17,6 @@ const STORAGE_PATH = path.join(DATA_DIR, "storage.json");
 const LOG_PATH = path.join(LOGS_DIR, "server.log");
 const PUBLIC_DIR = path.join(__dirname, "public");
 
-app.use(express.json({ limit: "1mb" }));
-app.use(express.static(PUBLIC_DIR, { index: false }));
-
 function ensureDirectories() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.mkdirSync(LOGS_DIR, { recursive: true });
@@ -34,15 +31,6 @@ function ensureDirectories() {
   }
 }
 
-function readStorage() {
-  ensureDirectories();
-  return JSON.parse(fs.readFileSync(STORAGE_PATH, "utf8"));
-}
-
-function writeStorage(data) {
-  fs.writeFileSync(STORAGE_PATH, JSON.stringify(data, null, 2), "utf8");
-}
-
 function logAction(action, details = {}) {
   ensureDirectories();
   const record = {
@@ -53,6 +41,30 @@ function logAction(action, details = {}) {
   const line = JSON.stringify(record);
   fs.appendFileSync(LOG_PATH, `${line}\n`, "utf8");
   console.log(line);
+}
+
+ensureDirectories();
+
+app.use(express.json({ limit: "1mb" }));
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
+    logAction("json_parse_error", {
+      message: err.message,
+      ip: req.ip
+    });
+    return res.status(400).json({ error: "Invalid JSON in request body" });
+  }
+  next(err);
+});
+app.use(express.static(PUBLIC_DIR, { index: false }));
+
+function readStorage() {
+  ensureDirectories();
+  return JSON.parse(fs.readFileSync(STORAGE_PATH, "utf8"));
+}
+
+function writeStorage(data) {
+  fs.writeFileSync(STORAGE_PATH, JSON.stringify(data, null, 2), "utf8");
 }
 
 function getToken(req) {
