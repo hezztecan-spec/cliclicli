@@ -1,7 +1,6 @@
 const REFRESH_INTERVAL_MS = 5000;
 
 const refreshButton = document.getElementById("refresh-button");
-const logoutButton = document.getElementById("logout-button");
 const statusNode = document.getElementById("status");
 const clientsCountNode = document.getElementById("clients-count");
 const archivedBadgeNode = document.getElementById("archived-badge");
@@ -334,17 +333,8 @@ async function submitCommand(event) {
   }
 }
 
-async function logout() {
-  try {
-    await postJson("/auth/logout", {});
-  } finally {
-    window.location.href = "/login";
-  }
-}
-
 function initialize() {
   refreshButton.addEventListener("click", loadDashboard);
-  logoutButton.addEventListener("click", logout);
   commandForm.addEventListener("submit", submitCommand);
 
   loadDashboard();

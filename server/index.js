@@ -7,15 +7,15 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 const FIXED_TOKEN = "a9K2xP8mZ7QwL1vB";
-const DASHBOARD_PASSWORD = "77057090A";
-const DASHBOARD_COOKIE_NAME = "dashboard_auth";
-const DASHBOARD_SESSION_VALUE = crypto.randomBytes(32).toString("hex");
 const ONLINE_THRESHOLD_MS = 30 * 1000;
 const DATA_DIR = path.join(__dirname, "data");
 const LOGS_DIR = path.join(__dirname, "logs");
 const STORAGE_PATH = path.join(DATA_DIR, "storage.json");
 const LOG_PATH = path.join(LOGS_DIR, "server.log");
 const PUBLIC_DIR = path.join(__dirname, "public");
+
+app.use(express.json({ limit: "1mb" }));
+app.use(express.static(PUBLIC_DIR, { index: false }));
 
 function ensureDirectories() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -31,6 +31,15 @@ function ensureDirectories() {
   }
 }
 
+function readStorage() {
+  ensureDirectories();
+  return JSON.parse(fs.readFileSync(STORAGE_PATH, "utf8"));
+}
+
+function writeStorage(data) {
+  fs.writeFileSync(STORAGE_PATH, JSON.stringify(data, null, 2), "utf8");
+}
+
 function logAction(action, details = {}) {
   ensureDirectories();
   const record = {
@@ -43,94 +52,11 @@ function logAction(action, details = {}) {
   console.log(line);
 }
 
-ensureDirectories();
-
-app.use(express.json({ limit: "1mb" }));
-app.use((err, req, res, next) => {
-  // Handle JSON parsing errors
-  if (err instanceof SyntaxError && "body" in err) {
-    logAction("json_parse_error", {
-      message: err.message,
-      ip: req.ip,
-      statusCode: err.status
-    });
-    return res.status(400).json({ error: "Invalid JSON in request body" });
-  }
-  
-  // Pass other errors to the next handler
-  next(err);
-});
-app.use(express.static(PUBLIC_DIR, { index: false }));
-
-function readStorage() {
-  ensureDirectories();
-  return JSON.parse(fs.readFileSync(STORAGE_PATH, "utf8"));
-}
-
-function writeStorage(data) {
-  fs.writeFileSync(STORAGE_PATH, JSON.stringify(data, null, 2), "utf8");
-}
-
 function getToken(req) {
   if (req.method === "GET") {
     return req.query.token;
   }
   return req.body?.token;
-}
-
-function parseCookies(req) {
-  const cookies = {};
-  const cookieHeader = req.headers.cookie || "";
-
-  for (const item of cookieHeader.split(";")) {
-    const [name, ...rest] = item.trim().split("=");
-    if (!name) {
-      continue;
-    }
-
-    cookies[name] = decodeURIComponent(rest.join("="));
-  }
-
-  return cookies;
-}
-
-function isSecureRequest(req) {
-  return req.secure || req.get("x-forwarded-proto") === "https";
-}
-
-function hasDashboardAccess(req) {
-  return parseCookies(req)[DASHBOARD_COOKIE_NAME] === DASHBOARD_SESSION_VALUE;
-}
-
-function setDashboardCookie(res, req) {
-  const parts = [
-    `${DASHBOARD_COOKIE_NAME}=${encodeURIComponent(DASHBOARD_SESSION_VALUE)}`,
-    "Path=/",
-    "HttpOnly",
-    "SameSite=Lax"
-  ];
-
-  if (isSecureRequest(req)) {
-    parts.push("Secure");
-  }
-
-  res.setHeader("Set-Cookie", parts.join("; "));
-}
-
-function clearDashboardCookie(res, req) {
-  const parts = [
-    `${DASHBOARD_COOKIE_NAME}=`,
-    "Path=/",
-    "HttpOnly",
-    "SameSite=Lax",
-    "Max-Age=0"
-  ];
-
-  if (isSecureRequest(req)) {
-    parts.push("Secure");
-  }
-
-  res.setHeader("Set-Cookie", parts.join("; "));
 }
 
 function normalizeClientId(value) {
@@ -153,10 +79,6 @@ function clientAuthMiddleware(req, res, next) {
 }
 
 function dashboardAuthMiddleware(req, res, next) {
-  if (!hasDashboardAccess(req)) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-
   return next();
 }
 
@@ -323,32 +245,11 @@ app.get("/health", (_req, res) => {
 });
 
 app.get("/", (req, res) => {
-  return res.redirect("/dashboard");
-});
-
-app.get("/login", (req, res) => {
-  return res.redirect("/dashboard");
+  res.sendFile(path.join(PUBLIC_DIR, "index.html"));
 });
 
 app.get("/dashboard", (req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, "index.html"));
-});
-
-app.post("/auth/login", requireTextField("password"), (req, res) => {
-  if (req.password !== DASHBOARD_PASSWORD) {
-    logAction("dashboard_login_failed", { ip: req.ip });
-    return res.status(401).json({ error: "Invalid password" });
-  }
-
-  setDashboardCookie(res, req);
-  logAction("dashboard_login_success", { ip: req.ip });
-  return res.json({ success: true });
-});
-
-app.post("/auth/logout", (req, res) => {
-  clearDashboardCookie(res, req);
-  logAction("dashboard_logout", { ip: req.ip });
-  return res.json({ success: true });
 });
 
 app.post("/register", clientAuthMiddleware, requireClientId, (req, res) => {
