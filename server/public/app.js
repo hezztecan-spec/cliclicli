@@ -54,6 +54,45 @@ function formatDate(value) {
   return date.toLocaleString();
 }
 
+function parseVersion(value) {
+  return String(value || "")
+    .replace(/^v/i, "")
+    .split(".")
+    .map((item) => Number.parseInt(item, 10) || 0);
+}
+
+function isVersionAtLeast(value, minimum) {
+  const left = parseVersion(value);
+  const right = parseVersion(minimum);
+  const maxLength = Math.max(left.length, right.length);
+
+  for (let index = 0; index < maxLength; index += 1) {
+    const leftValue = left[index] || 0;
+    const rightValue = right[index] || 0;
+    if (leftValue > rightValue) {
+      return true;
+    }
+    if (leftValue < rightValue) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function supportsInteractiveTerminal(client) {
+  return isVersionAtLeast(client?.system_info?.client_version || "", "1.0.2");
+}
+
+function encodeBase64Utf8(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary);
+}
+
 function safeStorageRead(key) {
   try {
     return localStorage.getItem(key);
@@ -409,6 +448,7 @@ function buildHistoryEntry(entry, sessionType) {
 function buildTerminalTab(client) {
   const sessions = syncActiveSession(client.client_id);
   const activeSession = getActiveSession(client.client_id);
+  const interactiveSupported = supportsInteractiveTerminal(client);
 
   return `
     <div class="terminal-layout">
@@ -444,6 +484,16 @@ function buildTerminalTab(client) {
       </aside>
 
       <div class="terminal-main">
+        ${
+          interactiveSupported
+            ? ""
+            : `
+              <div class="compat-box">
+                У клиента версия ниже 1.0.2. Для него доступен только старый режим разовой команды без
+                сохранения настоящей shell-сессии.
+              </div>
+            `
+        }
         ${
           activeSession
             ? `
@@ -490,9 +540,15 @@ function buildTerminalTab(client) {
                     required
                   ></textarea>
                 </label>
-                <button type="submit">Отправить в терминал</button>
+                <button type="submit">${interactiveSupported ? "Отправить в терминал" : "Выполнить команду"}</button>
               </form>
-              <p class="hint">Сессии сохраняются локально и не удаляются автоматически, пока вы не удалите их сами.</p>
+              <p class="hint">
+                ${
+                  interactiveSupported
+                    ? "Сессии сохраняются локально и не удаляются автоматически, пока вы не удалите их сами."
+                    : "Сессии сохраняются в панели, но старый клиент будет выполнять команды как отдельные запуски."
+                }
+              </p>
             `
             : '<p class="muted">Создайте терминал для этого клиента.</p>'
         }
@@ -734,8 +790,26 @@ function attachDetailListeners(client) {
 
   const deleteSessionButton = clientDetailsNode.querySelector("[data-delete-session]");
   if (deleteSessionButton) {
-    deleteSessionButton.addEventListener("click", () => {
+    deleteSessionButton.addEventListener("click", async () => {
       const sessionId = deleteSessionButton.dataset.deleteSession || "";
+
+      if (supportsInteractiveTerminal(client)) {
+        try {
+          await postJson("/add-command", {
+            client_id: client.client_id,
+            command: buildTerminalCloseCommand(sessionId),
+            command_kind: "terminal",
+            terminal_session_id: sessionId,
+            terminal_type: getActiveSession(client.client_id)?.terminalType || "cmd",
+            terminal_title: getActiveSession(client.client_id)?.title || "Terminal",
+            display_command: "[close terminal]"
+          });
+        } catch (error) {
+          setStatus(error.message, true);
+          return;
+        }
+      }
+
       const sessions = getClientSessions(client.client_id).filter((session) => session.id !== sessionId);
 
       if (!sessions.length) {
@@ -763,7 +837,7 @@ function attachDetailListeners(client) {
         return;
       }
 
-      const command = buildTerminalCommand(session.terminalType, rawCommand);
+      const command = buildTerminalCommand(client, session, rawCommand);
       setStatus(`Команда отправляется в ${session.title}...`);
 
       try {
@@ -797,9 +871,28 @@ function attachDetailListeners(client) {
   }
 }
 
-function buildTerminalCommand(type, rawCommand) {
+function buildTerminalPayload(session, rawCommand) {
+  return encodeBase64Utf8(
+    JSON.stringify({
+      session_id: session.id,
+      terminal_type: session.terminalType,
+      command: rawCommand.trim()
+    })
+  );
+}
+
+function buildTerminalCloseCommand(sessionId) {
+  return `terminal_close:${encodeBase64Utf8(JSON.stringify({ session_id: sessionId }))}`;
+}
+
+function buildTerminalCommand(client, session, rawCommand) {
   const command = rawCommand.trim();
-  switch (type) {
+
+  if (supportsInteractiveTerminal(client)) {
+    return `terminal_exec:${buildTerminalPayload(session, command)}`;
+  }
+
+  switch (session.terminalType) {
     case "powershell":
       return `shell:powershell -NoProfile -ExecutionPolicy Bypass -Command '${command.replaceAll("'", "''")}'`;
     case "bash":

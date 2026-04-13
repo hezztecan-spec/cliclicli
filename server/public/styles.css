@@ -469,6 +469,15 @@ h1 {
   gap: 12px;
 }
 
+.compat-box {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: #fff3d7;
+  border: 1px solid #efd28a;
+  color: #6c4f0b;
+  line-height: 1.5;
+}
+
 .terminal-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(180px, 220px) auto;
