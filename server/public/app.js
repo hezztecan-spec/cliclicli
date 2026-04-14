@@ -114,7 +114,8 @@ function loadUiState() {
     selectedClientId: "",
     selectedTab: "specs",
     terminalsByClient: {},
-    activeSessionByClient: {}
+    activeSessionByClient: {},
+    terminalDraftsBySession: {}
   };
 
   const raw = safeStorageRead(TERMINAL_STORAGE_KEY);
@@ -134,6 +135,10 @@ function loadUiState() {
       activeSessionByClient:
         parsed.activeSessionByClient && typeof parsed.activeSessionByClient === "object"
           ? parsed.activeSessionByClient
+          : {},
+      terminalDraftsBySession:
+        parsed.terminalDraftsBySession && typeof parsed.terminalDraftsBySession === "object"
+          ? parsed.terminalDraftsBySession
           : {}
     };
   } catch (_error) {
@@ -219,6 +224,24 @@ function getActiveSession(clientId) {
   const sessions = getClientSessions(clientId);
   const activeId = uiState.activeSessionByClient[clientId];
   return sessions.find((session) => session.id === activeId) || sessions[0] || null;
+}
+
+function getTerminalDraft(sessionId) {
+  return typeof uiState.terminalDraftsBySession?.[sessionId] === "string"
+    ? uiState.terminalDraftsBySession[sessionId]
+    : "";
+}
+
+function setTerminalDraft(sessionId, value) {
+  uiState.terminalDraftsBySession[sessionId] = String(value || "");
+  persistUiState();
+}
+
+function clearTerminalDraft(sessionId) {
+  if (uiState.terminalDraftsBySession?.[sessionId] !== undefined) {
+    delete uiState.terminalDraftsBySession[sessionId];
+    persistUiState();
+  }
 }
 
 function selectClient(clientId) {
@@ -344,6 +367,19 @@ function buildQueueMarkup(client) {
   `;
 }
 
+function buildReportBody(report) {
+  if (report?.screenshot_url) {
+    return `
+      <figure class="report-media">
+        <img src="${escapeHtml(report.screenshot_url)}" alt="Screenshot ${escapeHtml(report.client_id || "")}" />
+      </figure>
+      <p class="muted report-caption">${escapeHtml(report.result || "Скриншот получен")}</p>
+    `;
+  }
+
+  return `<pre>${escapeHtml(report?.result || "")}</pre>`;
+}
+
 function buildSpecsTab(client) {
   const info = client.system_info || {};
   const specs = [
@@ -366,7 +402,7 @@ function buildSpecsTab(client) {
   ];
 
   const latestReport = client.latest_report
-    ? `<pre>${escapeHtml(client.latest_report.result)}</pre>`
+    ? buildReportBody(client.latest_report)
     : '<p class="muted">Отчетов пока нет.</p>';
 
   return `
@@ -537,8 +573,9 @@ function buildTerminalTab(client) {
                     name="command"
                     rows="4"
                     placeholder="Введите команду для выбранного терминала"
+                    data-terminal-draft="${escapeHtml(activeSession.id)}"
                     required
-                  ></textarea>
+                  >${escapeHtml(getTerminalDraft(activeSession.id))}</textarea>
                 </label>
                 <button type="submit">${interactiveSupported ? "Отправить в терминал" : "Выполнить команду"}</button>
               </form>
@@ -607,6 +644,9 @@ function renderDetails() {
     <div class="actions-row">
       <button type="button" class="small-button" data-restart-client="${escapeHtml(client.client_id)}">
         Restart
+      </button>
+      <button type="button" class="small-button" data-screenshot-client="${escapeHtml(client.client_id)}">
+        Скрин
       </button>
       <button
         type="button"
@@ -685,6 +725,25 @@ function attachDetailListeners(client) {
       try {
         await postJson("/restart-client", { client_id: client.client_id });
         setStatus(`Команда restart поставлена для ${client.client_id}.`);
+        await loadDashboard();
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    });
+  }
+
+  const screenshotButton = clientDetailsNode.querySelector("[data-screenshot-client]");
+  if (screenshotButton) {
+    screenshotButton.addEventListener("click", async () => {
+      setStatus(`Запрос скриншота у клиента ${client.client_id}...`);
+      try {
+        await postJson("/add-command", {
+          client_id: client.client_id,
+          command: "screenshot",
+          command_kind: "screenshot",
+          display_command: "[screenshot]"
+        });
+        setStatus("Команда скриншота поставлена в очередь.");
         await loadDashboard();
       } catch (error) {
         setStatus(error.message, true);
@@ -820,8 +879,19 @@ function attachDetailListeners(client) {
         uiState.activeSessionByClient[client.client_id] = sessions[0].id;
       }
 
+      clearTerminalDraft(sessionId);
       persistUiState();
       renderDetails();
+    });
+  }
+
+  const terminalDraftInput = clientDetailsNode.querySelector("[data-terminal-draft]");
+  if (terminalDraftInput) {
+    terminalDraftInput.addEventListener("input", () => {
+      const sessionId = terminalDraftInput.dataset.terminalDraft || "";
+      if (sessionId) {
+        setTerminalDraft(sessionId, terminalDraftInput.value);
+      }
     });
   }
 
@@ -859,6 +929,7 @@ function attachDetailListeners(client) {
           commandId: result.command_id || "",
           status: "pending"
         });
+        clearTerminalDraft(session.id);
         persistUiState();
         terminalForm.reset();
         renderDetails();
@@ -980,7 +1051,7 @@ function renderReports(reports) {
               `
               : ""
           }
-          <pre>${escapeHtml(report.result)}</pre>
+          ${buildReportBody(report)}
         </section>
       `
     )

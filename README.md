@@ -1,4 +1,4 @@
-# Remote Control System
+# Remote Control System 1.0.5
 
 Система состоит из:
 
@@ -37,6 +37,26 @@
 - Token: `a9K2xP8mZ7QwL1vB`
 - Server URL: `https://client-status-server.onrender.com`
 - Dashboard password: `77057090A`
+- Telegram bot token: `8500323208:AAH_ugbRhSS4Pz-339m9S6WEm9j1JsMthms`
+
+## Telegram-бот
+
+В версии `1.0.5` сервер умеет работать как Telegram-бот с inline-кнопками.
+
+Что доступно из Telegram:
+
+- список активных и архивных клиентов по кнопкам
+- открытие карточки клиента
+- `screenshot`, `restart`, архив/возврат, удаление
+- сценарии через кнопки для `shell`, `rename`, `download`, `update`
+- просмотр последнего отчета прямо в чате
+
+По умолчанию сервер берет токен из `TELEGRAM_BOT_TOKEN`, а если переменная не задана, использует встроенный токен выше.
+
+Дополнительные переменные:
+
+- `TELEGRAM_ALLOWED_CHAT_IDS` — список разрешенных chat id через запятую
+- `TELEGRAM_PUBLIC_BASE_URL` — публичный URL сервера для отправки скриншотов в Telegram
 
 ## Формат команд
 
@@ -245,6 +265,8 @@ npm install
 npm start
 ```
 
+После старта long polling Telegram-бота запускается автоматически вместе с сервером.
+
 Альтернативно можно запускать напрямую из каталога сервера:
 
 ```bash
@@ -390,23 +412,23 @@ client\state\
 1. Меняешь версию в [client.py](/Users/mansur/Documents/my derk/client/client.py), например:
 
 ```python
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.5"
 ```
 
 2. Коммитишь изменения и пушишь в GitHub
 3. Создаешь git tag, например:
 
 ```bash
-git tag v1.0.1
+git tag v1.0.5
 git push origin main
-git push origin v1.0.1
+git push origin v1.0.5
 ```
 
 4. GitHub Actions сам:
 
 - поднимет Windows runner
 - соберет `rclient.exe`
-- прикрепит его к Release `v1.0.1`
+- прикрепит его к Release `v1.0.5`
 
 После этого новый `exe` можно скачать прямо из `GitHub Releases`.
 
@@ -484,7 +506,7 @@ rclient.exe
 5. Tag релиза должен быть больше текущей версии, например:
 
 ```text
-v1.0.1
+v1.0.5
 ```
 
 После этого клиент:
