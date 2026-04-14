@@ -716,6 +716,7 @@ def execute_screenshot(_command_text):
                 text=True,
                 timeout=30,
                 check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW if is_windows() else 0,
             )
             if completed.returncode != 0 or not output_path.exists():
                 raise RuntimeError(get_process_error_message(completed, "failed to capture screenshot"))
